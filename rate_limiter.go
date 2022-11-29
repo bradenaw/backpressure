@@ -55,18 +55,22 @@ func (rl *RateLimiter) bg() {
 	ready := notReady
 
 	admit := func(now time.Time) {
+		// Reap all of the queues, which may flip them to short timeout + LIFO, which'll might
+		// change who's next.
 		for _, queue := range rl.queues {
 			queue.reap(now)
 		}
 		rl.refill(now)
 		for _, queue := range rl.queues {
 			for {
-				item, ok := queue.head()
+				item, ok := queue.next()
 				if !ok {
+					// No high-priority waiters, check the next priority down.
 					break
 				}
 				need := item.tokens - rl.tokens
 				if need <= 0 {
+					// We can fill their request right now.
 					queue.pop(now)
 					ok := item.admit()
 					if !ok {
@@ -84,6 +88,8 @@ func (rl *RateLimiter) bg() {
 						nextTimer.Reset(nextReady)
 					}
 					ready = nextTimer.C
+					// There's already a waiter for a higher priority, so don't bother even looking
+					// at the lower-priority queues.
 					return
 				}
 			}
@@ -93,6 +99,7 @@ func (rl *RateLimiter) bg() {
 				<-nextTimer.C
 			}
 		}
+		// If we're here, all of the queues are empty.
 		ready = notReady
 	}
 
@@ -101,10 +108,15 @@ func (rl *RateLimiter) bg() {
 		case w := <-rl.add:
 			now := time.Now()
 			rl.queues[int(w.p)].push(now, w)
+			// We might be able to admit them right away, so give it a go.
 			admit(now)
 		case <-ticker.C:
+			// Ticker used to make sure we're reaping regularly, which might mean adjusting the
+			// timeout of the codels. admit handles that and setting `ready` properly.
 			admit(time.Now())
 		case <-ready:
+			// Timer fired, somebody is ready to be admitted. Probably. Might've tripped over codel
+			// lifetime but admit handles that.
 			admit(time.Now())
 		}
 	}
@@ -134,8 +146,9 @@ func (w *rlWaiter) wait(ctx context.Context) error {
 }
 
 func (w *rlWaiter) admit() bool {
+	ok := atomic.CompareAndSwapUint32(&w.s, 0, 1)
 	w.c <- true
-	return atomic.CompareAndSwapUint32(&w.s, 0, 1)
+	return ok
 }
 
 func (w *rlWaiter) drop() {
@@ -174,7 +187,7 @@ func (c *codel[T]) setMode(now time.Time) {
 	}
 }
 
-func (c *codel[T]) head() (T, bool) {
+func (c *codel[T]) next() (T, bool) {
 	if c.items.Len() == 0 {
 		var zero T
 		return zero, false
