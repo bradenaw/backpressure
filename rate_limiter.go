@@ -118,7 +118,7 @@ func (rl *RateLimiter) background(ctx context.Context) {
 					rl.tokens -= item.tokens
 				} else {
 					for i := p + 1; i < len(rl.queues); i++ {
-						rl.debt[i].add(now, math.Min(rl.debt[i].get(now), need))
+						rl.debt[i].add(now, math.Min(rl.burst-rl.debt[i].get(now), need))
 					}
 					nextReady := time.Duration(need / rl.tokensPerSec * float64(time.Second))
 					if nextTimer == nil {
@@ -148,6 +148,7 @@ func (rl *RateLimiter) background(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			ticker.Stop()
 			if nextTimer != nil {
 				nextTimer.Stop()
 			}
