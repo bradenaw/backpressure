@@ -8,3 +8,5 @@ const (
 	Medium
 	Low
 )
+
+const nPriorities = 4

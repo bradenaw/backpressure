@@ -3,10 +3,12 @@ package load_mgmt
 import (
 	"context"
 	"errors"
+	"math"
 	"sync/atomic"
 	"time"
 
 	"github.com/bradenaw/juniper/container/deque"
+	"github.com/bradenaw/juniper/xsync"
 )
 
 var (
@@ -15,15 +17,52 @@ var (
 
 type RateLimiter struct {
 	shortTimeout time.Duration
-	add          chan *rlWaiter
 	tokensPerSec float64
 	burst        float64
+	bg           *xsync.Group
 
 	// TODO: track demand per priority and require padding before admitting lower priorities so that
 	// high priorities do not have to wait
+	add      chan *rlWaiter
 	queues   []codel[*rlWaiter]
+	debt     []expDecay
 	tokens   float64
 	lastFill time.Time
+}
+
+func NewRateLimiter(
+	shortTimeout time.Duration,
+	longTimeout time.Duration,
+	tokensPerSec float64,
+	burst float64,
+	debtDecay float64,
+) *RateLimiter {
+	now := time.Now()
+	queues := make([]codel[*rlWaiter], nPriorities)
+	debt := make([]expDecay, nPriorities)
+	for i := range queues {
+		queues[i] = newCodel[*rlWaiter](shortTimeout, longTimeout)
+		debt[i] = expDecay{
+			decay: debtDecay,
+			last:  now,
+		}
+	}
+
+	rl := &RateLimiter{
+		shortTimeout: shortTimeout,
+		tokensPerSec: tokensPerSec,
+		burst:        burst,
+		bg:           xsync.NewGroup(context.Background()),
+
+		add:      make(chan *rlWaiter),
+		queues:   queues,
+		debt:     debt,
+		tokens:   0,
+		lastFill: now,
+	}
+	rl.bg.Once(rl.background)
+
+	return rl
 }
 
 func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) error {
@@ -40,6 +79,10 @@ func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) err
 	return w.wait(ctx)
 }
 
+func (rl *RateLimiter) Close() {
+	rl.bg.Wait()
+}
+
 func (rl *RateLimiter) refill(now time.Time) {
 	rl.tokens += now.Sub(rl.lastFill).Seconds() * rl.tokensPerSec
 	if rl.tokens > rl.burst {
@@ -48,27 +91,27 @@ func (rl *RateLimiter) refill(now time.Time) {
 	rl.lastFill = now
 }
 
-func (rl *RateLimiter) bg() {
+func (rl *RateLimiter) background(ctx context.Context) {
 	ticker := time.NewTicker(rl.shortTimeout / 2)
 	var nextTimer *time.Timer
 	var notReady <-chan time.Time
 	ready := notReady
 
 	admit := func(now time.Time) {
-		// Reap all of the queues, which may flip them to short timeout + LIFO, which'll might
-		// change who's next.
+		// Reap all of the queues, which may flip them to short timeout + LIFO, which might change
+		// who's next.
 		for _, queue := range rl.queues {
 			queue.reap(now)
 		}
 		rl.refill(now)
-		for _, queue := range rl.queues {
+		for p, queue := range rl.queues {
 			for {
 				item, ok := queue.next()
 				if !ok {
 					// No high-priority waiters, check the next priority down.
 					break
 				}
-				need := item.tokens - rl.tokens
+				need := rl.tokens + rl.debt[p].get(now) - item.tokens
 				if need <= 0 {
 					// We can fill their request right now.
 					queue.pop(now)
@@ -78,6 +121,9 @@ func (rl *RateLimiter) bg() {
 					}
 					rl.tokens -= item.tokens
 				} else {
+					for i := p + 1; i < len(rl.queues); i++ {
+						rl.debt[i].add(now, math.Min(rl.debt[i].get(now), need))
+					}
 					nextReady := time.Duration(need / rl.tokensPerSec * float64(time.Second))
 					if nextTimer == nil {
 						nextTimer = time.NewTimer(nextReady)
@@ -179,6 +225,13 @@ type codel[T codelT] struct {
 	items        deque.Deque[codelItem[T]]
 }
 
+func newCodel[T codelT](shortTimeout time.Duration, longTimeout time.Duration) codel[T] {
+	return codel[T]{
+		shortTimeout: shortTimeout,
+		longTimeout:  longTimeout,
+	}
+}
+
 func (c *codel[T]) setMode(now time.Time) {
 	if c.items.Len() == 0 {
 		c.mode = codelModeFIFO
@@ -241,4 +294,21 @@ func (c *codel[T]) reap(now time.Time) {
 		item.t.drop()
 	}
 	c.setMode(now)
+}
+
+type expDecay struct {
+	decay float64
+	last  time.Time
+	ctr   float64
+}
+
+func (d *expDecay) add(now time.Time, x float64) {
+	d.get(now)
+	d.ctr += x
+}
+
+func (d *expDecay) get(now time.Time) float64 {
+	d.ctr *= math.Pow((1 - d.decay), now.Sub(d.last).Seconds())
+	d.last = now
+	return d.ctr
 }
