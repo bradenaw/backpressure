@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"math"
-	"sync/atomic"
 	"time"
 
-	"github.com/bradenaw/juniper/container/deque"
 	"github.com/bradenaw/juniper/xsync"
 )
 
@@ -23,8 +21,8 @@ type RateLimiter struct {
 
 	// TODO: track demand per priority and require padding before admitting lower priorities so that
 	// high priorities do not have to wait
-	add      chan *rlWaiter
-	queues   []codel[*rlWaiter]
+	add      chan *codelWaiter[rlWaiter]
+	queues   []codel[rlWaiter]
 	debt     []expDecay
 	tokens   float64
 	lastFill time.Time
@@ -38,10 +36,10 @@ func NewRateLimiter(
 	debtDecay float64,
 ) *RateLimiter {
 	now := time.Now()
-	queues := make([]codel[*rlWaiter], nPriorities)
+	queues := make([]codel[rlWaiter], nPriorities)
 	debt := make([]expDecay, nPriorities)
 	for i := range queues {
-		queues[i] = newCodel[*rlWaiter](shortTimeout, longTimeout)
+		queues[i] = newCodel[rlWaiter](shortTimeout, longTimeout)
 		debt[i] = expDecay{
 			decay: debtDecay,
 			last:  now,
@@ -54,7 +52,7 @@ func NewRateLimiter(
 		burst:        burst,
 		bg:           xsync.NewGroup(context.Background()),
 
-		add:      make(chan *rlWaiter),
+		add:      make(chan *codelWaiter[rlWaiter]),
 		queues:   queues,
 		debt:     debt,
 		tokens:   0,
@@ -66,11 +64,10 @@ func NewRateLimiter(
 }
 
 func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) error {
-	w := &rlWaiter{
+	w := newCodelWaiter(time.Now(), rlWaiter{
 		p:      p,
 		tokens: tokens,
-		c:      make(chan bool, 1),
-	}
+	})
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -114,8 +111,7 @@ func (rl *RateLimiter) background(ctx context.Context) {
 				need := rl.tokens + rl.debt[p].get(now) - item.tokens
 				if need <= 0 {
 					// We can fill their request right now.
-					queue.pop(now)
-					ok := item.admit()
+					item, ok := queue.pop(now)
 					if !ok {
 						continue
 					}
@@ -153,7 +149,7 @@ func (rl *RateLimiter) background(ctx context.Context) {
 		select {
 		case w := <-rl.add:
 			now := time.Now()
-			rl.queues[int(w.p)].push(now, w)
+			rl.queues[int(w.t.p)].push(now, w)
 			// We might be able to admit them right away, so give it a go.
 			admit(now)
 		case <-ticker.C:
@@ -171,129 +167,6 @@ func (rl *RateLimiter) background(ctx context.Context) {
 type rlWaiter struct {
 	p      Priority
 	tokens float64
-	s      uint32
-	c      chan bool
-}
-
-func (w *rlWaiter) wait(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		if !atomic.CompareAndSwapUint32(&w.s, 0, 2) {
-			return nil
-		}
-		return ctx.Err()
-	case v := <-w.c:
-		if v {
-			return nil
-		} else {
-			return ErrTimedOut
-		}
-	}
-}
-
-func (w *rlWaiter) admit() bool {
-	ok := atomic.CompareAndSwapUint32(&w.s, 0, 1)
-	w.c <- true
-	return ok
-}
-
-func (w *rlWaiter) drop() {
-	w.c <- false
-}
-
-type codelMode int
-
-const (
-	codelModeFIFO codelMode = iota
-	codelModeLIFO
-)
-
-type codelItem[T codelT] struct {
-	enqueued time.Time
-	t        T
-}
-
-type codelT interface {
-	drop()
-}
-
-type codel[T codelT] struct {
-	shortTimeout time.Duration
-	longTimeout  time.Duration
-	lastEmpty    time.Time
-	mode         codelMode
-	items        deque.Deque[codelItem[T]]
-}
-
-func newCodel[T codelT](shortTimeout time.Duration, longTimeout time.Duration) codel[T] {
-	return codel[T]{
-		shortTimeout: shortTimeout,
-		longTimeout:  longTimeout,
-	}
-}
-
-func (c *codel[T]) setMode(now time.Time) {
-	if c.items.Len() == 0 {
-		c.mode = codelModeFIFO
-	} else if now.Sub(c.lastEmpty) > c.longTimeout {
-		c.mode = codelModeLIFO
-	}
-}
-
-func (c *codel[T]) next() (T, bool) {
-	if c.items.Len() == 0 {
-		var zero T
-		return zero, false
-	}
-	switch c.mode {
-	case codelModeFIFO:
-		return c.items.Item(0).t, true
-	case codelModeLIFO:
-		return c.items.Item(c.items.Len() - 1).t, true
-	default:
-		panic("unreachable")
-	}
-}
-
-func (c *codel[T]) pop(now time.Time) (T, bool) {
-	if c.items.Len() == 0 {
-		var zero T
-		return zero, false
-	}
-	var item T
-	switch c.mode {
-	case codelModeFIFO:
-		item = c.items.PopFront().t
-	case codelModeLIFO:
-		item = c.items.PopBack().t
-	default:
-		panic("unreachable")
-	}
-	c.setMode(now)
-	return item, true
-}
-
-func (c *codel[T]) push(now time.Time, t T) {
-	c.items.PushBack(codelItem[T]{
-		enqueued: now,
-		t:        t,
-	})
-}
-
-func (c *codel[T]) reap(now time.Time) {
-	c.setMode(now)
-	timeout := c.longTimeout
-	if c.mode == codelModeLIFO {
-		timeout = c.shortTimeout
-	}
-	for c.items.Len() > 0 {
-		if now.Sub(c.items.Item(0).enqueued) <= timeout {
-			break
-		}
-		item := c.items.PopFront()
-		item.t.drop()
-	}
-	c.setMode(now)
 }
 
 type expDecay struct {
