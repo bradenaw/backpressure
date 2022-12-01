@@ -147,6 +147,11 @@ func (rl *RateLimiter) background(ctx context.Context) {
 
 	for {
 		select {
+		case <-ctx.Done():
+			if nextTimer != nil {
+				nextTimer.Stop()
+			}
+			return
 		case w := <-rl.add:
 			now := time.Now()
 			rl.queues[int(w.t.p)].push(now, w)
