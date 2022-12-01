@@ -80,6 +80,10 @@ func (c *codel[T]) setMode(now time.Time) {
 	}
 }
 
+func (c *codel[T]) empty() bool {
+	return c.items.Len() == 0
+}
+
 func (c *codel[T]) next() (T, bool) {
 	if c.items.Len() == 0 {
 		var zero T
