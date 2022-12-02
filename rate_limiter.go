@@ -15,7 +15,7 @@ var (
 
 type RateLimiter struct {
 	shortTimeout time.Duration
-	tokensPerSec float64
+	rate         float64
 	burst        float64
 	bg           *xsync.Group
 
@@ -28,10 +28,15 @@ type RateLimiter struct {
 	lastFill time.Time
 }
 
+type rlWaiter struct {
+	p      Priority
+	tokens float64
+}
+
 func NewRateLimiter(
 	shortTimeout time.Duration,
 	longTimeout time.Duration,
-	tokensPerSec float64,
+	rate float64,
 	burst float64,
 	debtDecay float64,
 ) *RateLimiter {
@@ -48,7 +53,7 @@ func NewRateLimiter(
 
 	rl := &RateLimiter{
 		shortTimeout: shortTimeout,
-		tokensPerSec: tokensPerSec,
+		rate:         rate,
 		burst:        burst,
 		bg:           xsync.NewGroup(context.Background()),
 
@@ -81,7 +86,7 @@ func (rl *RateLimiter) Close() {
 }
 
 func (rl *RateLimiter) refill(now time.Time) {
-	rl.tokens += now.Sub(rl.lastFill).Seconds() * rl.tokensPerSec
+	rl.tokens += now.Sub(rl.lastFill).Seconds() * rl.rate
 	if rl.tokens > rl.burst {
 		rl.tokens = rl.burst
 	}
@@ -120,7 +125,7 @@ func (rl *RateLimiter) background(ctx context.Context) {
 					for i := p + 1; i < len(rl.queues); i++ {
 						rl.debt[i].add(now, math.Min(rl.burst-rl.debt[i].get(now), need))
 					}
-					nextReady := time.Duration(need / rl.tokensPerSec * float64(time.Second))
+					nextReady := time.Duration(need / rl.rate * float64(time.Second))
 					if nextTimer == nil {
 						nextTimer = time.NewTimer(nextReady)
 					} else {
@@ -168,26 +173,4 @@ func (rl *RateLimiter) background(ctx context.Context) {
 			admit(time.Now())
 		}
 	}
-}
-
-type rlWaiter struct {
-	p      Priority
-	tokens float64
-}
-
-type expDecay struct {
-	decay float64
-	last  time.Time
-	ctr   float64
-}
-
-func (d *expDecay) add(now time.Time, x float64) {
-	d.get(now)
-	d.ctr += x
-}
-
-func (d *expDecay) get(now time.Time) float64 {
-	d.ctr *= math.Pow((1 - d.decay), now.Sub(d.last).Seconds())
-	d.last = now
-	return d.ctr
 }
