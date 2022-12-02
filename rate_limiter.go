@@ -14,23 +14,20 @@ var (
 )
 
 type RateLimiter struct {
-	shortTimeout time.Duration
-	rate         float64
-	burst        float64
-	bg           *xsync.Group
+	bg *xsync.Group
 
-	// TODO: track demand per priority and require padding before admitting lower priorities so that
-	// high priorities do not have to wait
-	add      chan *codelWaiter[rlWaiter]
-	queues   []codel[rlWaiter]
-	debt     []expDecay
-	tokens   float64
-	lastFill time.Time
+	add        chan *codelWaiter[rlWaiter]
+	rateChange chan rateChange
 }
 
 type rlWaiter struct {
 	p      Priority
 	tokens float64
+}
+type rateChange struct {
+	rate  float64
+	burst float64
+	c     chan struct{}
 }
 
 func NewRateLimiter(
@@ -52,18 +49,13 @@ func NewRateLimiter(
 	}
 
 	rl := &RateLimiter{
-		shortTimeout: shortTimeout,
-		rate:         rate,
-		burst:        burst,
-		bg:           xsync.NewGroup(context.Background()),
-
-		add:      make(chan *codelWaiter[rlWaiter]),
-		queues:   queues,
-		debt:     debt,
-		tokens:   0,
-		lastFill: now,
+		bg:         xsync.NewGroup(context.Background()),
+		add:        make(chan *codelWaiter[rlWaiter]),
+		rateChange: make(chan rateChange),
 	}
-	rl.bg.Once(rl.background)
+	rl.bg.Once(func(ctx context.Context) {
+		rl.background(ctx, shortTimeout, rate, burst, queues, debt, now)
+	})
 
 	return rl
 }
@@ -81,51 +73,81 @@ func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) err
 	return w.wait(ctx)
 }
 
+func (rl *RateLimiter) SetRate(rate float64, burst float64) {
+	c := make(chan struct{})
+	rl.rateChange <- rateChange{
+		rate:  rate,
+		burst: burst,
+		c:     c,
+	}
+	<-c
+}
+
 func (rl *RateLimiter) Close() {
 	rl.bg.Wait()
 }
 
-func (rl *RateLimiter) refill(now time.Time) {
-	rl.tokens += now.Sub(rl.lastFill).Seconds() * rl.rate
-	if rl.tokens > rl.burst {
-		rl.tokens = rl.burst
-	}
-	rl.lastFill = now
-}
+func (rl *RateLimiter) background(
+	ctx context.Context,
+	shortTimeout time.Duration,
+	rate float64,
+	burst float64,
+	queues []codel[rlWaiter],
+	debt []expDecay,
+	start time.Time,
+) {
+	tokens := float64(0)
+	lastFill := start
 
-func (rl *RateLimiter) background(ctx context.Context) {
-	ticker := time.NewTicker(rl.shortTimeout / 2)
+	// Ticker needs to fire every so often to reap the codels.
+	ticker := time.NewTicker(shortTimeout / 2)
+	// nextTimer is the timer until the next waiter can be admitted, if there is one. It's nil until
+	// the first waiter, after that never nil, we always reset.
 	var nextTimer *time.Timer
+	// notReady is a nil channel which blocks forever on receive.
 	var notReady <-chan time.Time
+	// ready is delivered to when the next waiter is (probably) ready to be admitted.
 	ready := notReady
+
+	refill := func(now time.Time) {
+		// Refill tokens.
+		tokens += now.Sub(lastFill).Seconds() * rate
+		if tokens > burst {
+			tokens = burst
+		}
+		lastFill = now
+	}
 
 	admit := func(now time.Time) {
 		// Reap all of the queues, which may flip them to short timeout + LIFO, which might change
 		// who's next.
-		for _, queue := range rl.queues {
+		for _, queue := range queues {
 			queue.reap(now)
 		}
-		rl.refill(now)
-		for p, queue := range rl.queues {
+
+		refill(now)
+
+		// Look through the queues from high priority to low priority to find somebody that's ready
+		// to wake. Because we always prefer to admit higher priorities, if we find anybody that
+		// isn't ready to wake yet, then they're the next one to be admitted and we can set the
+		// timer accordingly.
+		for p, queue := range queues {
 			for {
 				item, ok := queue.next()
 				if !ok {
 					// No high-priority waiters, check the next priority down.
 					break
 				}
-				need := rl.tokens + rl.debt[p].get(now) - item.tokens
+				need := tokens + debt[p].get(now) - item.tokens
 				if need <= 0 {
 					// We can fill their request right now.
 					item, ok := queue.pop(now)
 					if !ok {
 						continue
 					}
-					rl.tokens -= item.tokens
+					tokens -= item.tokens
 				} else {
-					for i := p + 1; i < len(rl.queues); i++ {
-						rl.debt[i].add(now, math.Min(rl.burst-rl.debt[i].get(now), need))
-					}
-					nextReady := time.Duration(need / rl.rate * float64(time.Second))
+					nextReady := time.Duration(need / rate * float64(time.Second))
 					if nextTimer == nil {
 						nextTimer = time.NewTimer(nextReady)
 					} else {
@@ -160,9 +182,28 @@ func (rl *RateLimiter) background(ctx context.Context) {
 			return
 		case w := <-rl.add:
 			now := time.Now()
-			rl.queues[int(w.t.p)].push(now, w)
-			// We might be able to admit them right away, so give it a go.
-			admit(now)
+			refill(now)
+			need := tokens + debt[int(w.t.p)].get(now) - w.t.tokens
+			// See if we can admit them right away.
+			if need <= 0 {
+				ok := w.admit()
+				if ok {
+					tokens -= w.t.tokens
+				}
+			} else {
+				// Otherwise, this waiter needs to block for a while. Penalize the lower priority
+				// queues to try to make sure waiters of this priority don't need to block in the
+				// future.
+				for i := int(w.t.p) + 1; i < len(queues); i++ {
+					debt[i].add(now, math.Min(burst-debt[i].get(now), need))
+				}
+				queues[int(w.t.p)].push(now, w)
+				admit(now)
+			}
+		case rc := <-rl.rateChange:
+			rate = rc.rate
+			burst = rc.burst
+			admit(time.Now())
 		case <-ticker.C:
 			// Ticker used to make sure we're reaping regularly, which might mean adjusting the
 			// timeout of the codels. admit handles that and setting `ready` properly.
