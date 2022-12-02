@@ -20,12 +20,14 @@ func newCodel[T any](shortTimeout time.Duration, longTimeout time.Duration) code
 	return codel[T]{
 		shortTimeout: shortTimeout,
 		longTimeout:  longTimeout,
+		lastEmpty:    time.Now(),
 	}
 }
 
 func (c *codel[T]) setMode(now time.Time) {
 	if c.items.Len() == 0 {
 		c.mode = codelModeFIFO
+		c.lastEmpty = now
 	} else if now.Sub(c.lastEmpty) > c.longTimeout {
 		c.mode = codelModeLIFO
 	}
