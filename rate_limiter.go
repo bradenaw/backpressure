@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	ErrTimedOut = errors.New("timed out")
+	ErrRejected = errors.New("rejected")
 )
 
 type RateLimiter struct {
@@ -24,6 +24,7 @@ type rlWaiter struct {
 	p      Priority
 	tokens float64
 }
+
 type rateChange struct {
 	rate  float64
 	burst float64
@@ -60,7 +61,8 @@ func NewRateLimiter(
 	return rl
 }
 
-func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) error {
+func (rl *RateLimiter) Wait(ctx context.Context, tokens float64) error {
+	p, _ := ContextPriority(ctx)
 	w := newCodelWaiter(time.Now(), rlWaiter{
 		p:      p,
 		tokens: tokens,

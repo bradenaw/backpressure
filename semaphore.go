@@ -55,7 +55,8 @@ func NewSemaphore(
 	return s
 }
 
-func (s *Semaphore) Admit(ctx context.Context, p Priority) (*SemaphoreTicket, error) {
+func (s *Semaphore) Admit(ctx context.Context) (*SemaphoreTicket, error) {
+	p, _ := ContextPriority(ctx)
 	now := time.Now()
 	s.m.Lock()
 	if float64(s.outstanding)+s.debt[p].get(now) < float64(s.capacity) {

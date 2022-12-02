@@ -8,55 +8,6 @@ import (
 	"github.com/bradenaw/juniper/container/deque"
 )
 
-type codelMode int
-
-const (
-	codelModeFIFO codelMode = iota
-	codelModeLIFO
-)
-
-type codelWaiter[T any] struct {
-	enqueued time.Time
-	s        uint32
-	c        chan bool
-	t        T
-}
-
-func newCodelWaiter[T any](now time.Time, t T) *codelWaiter[T] {
-	return &codelWaiter[T]{
-		enqueued: now,
-		s:        0,
-		c:        make(chan bool, 1),
-		t:        t,
-	}
-}
-
-func (w *codelWaiter[T]) wait(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		if !atomic.CompareAndSwapUint32(&w.s, 0, 2) {
-			return nil
-		}
-		return ctx.Err()
-	case v := <-w.c:
-		if v {
-			return nil
-		} else {
-			return ErrTimedOut
-		}
-	}
-}
-
-func (w *codelWaiter[T]) admit() bool {
-	ok := atomic.CompareAndSwapUint32(&w.s, 0, 1)
-	w.c <- true
-	return ok
-}
-
-func (w *codelWaiter[T]) drop() {
-	w.c <- false
-}
-
 type codel[T any] struct {
 	shortTimeout time.Duration
 	longTimeout  time.Duration
@@ -140,4 +91,53 @@ func (c *codel[T]) reap(now time.Time) {
 		item.drop()
 	}
 	c.setMode(now)
+}
+
+type codelMode int
+
+const (
+	codelModeFIFO codelMode = iota
+	codelModeLIFO
+)
+
+type codelWaiter[T any] struct {
+	enqueued time.Time
+	s        uint32
+	c        chan bool
+	t        T
+}
+
+func newCodelWaiter[T any](now time.Time, t T) *codelWaiter[T] {
+	return &codelWaiter[T]{
+		enqueued: now,
+		s:        0,
+		c:        make(chan bool, 1),
+		t:        t,
+	}
+}
+
+func (w *codelWaiter[T]) wait(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		if !atomic.CompareAndSwapUint32(&w.s, 0, 2) {
+			return nil
+		}
+		return ctx.Err()
+	case v := <-w.c:
+		if v {
+			return nil
+		} else {
+			return ErrRejected
+		}
+	}
+}
+
+func (w *codelWaiter[T]) admit() bool {
+	ok := atomic.CompareAndSwapUint32(&w.s, 0, 1)
+	w.c <- true
+	return ok
+}
+
+func (w *codelWaiter[T]) drop() {
+	w.c <- false
 }
