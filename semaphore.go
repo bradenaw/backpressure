@@ -16,8 +16,8 @@ type Semaphore struct {
 	m           sync.Mutex
 	capacity    int
 	outstanding int
-	queues      []codel[struct{}]
-	debt        []expDecay
+	queues      [nPriorities]codel[struct{}]
+	debt        [nPriorities]expDecay
 }
 
 type SemaphoreTicket struct {
@@ -31,15 +31,6 @@ func NewSemaphore(
 	debtDecay float64,
 ) *Semaphore {
 	now := time.Now()
-	queues := make([]codel[struct{}], nPriorities)
-	debt := make([]expDecay, nPriorities)
-	for i := range queues {
-		queues[i] = newCodel[struct{}](shortTimeout, longTimeout)
-		debt[i] = expDecay{
-			decay: debtDecay,
-			last:  now,
-		}
-	}
 
 	s := &Semaphore{
 		capacity:     capacity,
@@ -47,8 +38,13 @@ func NewSemaphore(
 		bg:           xsync.NewGroup(context.Background()),
 
 		outstanding: 0,
-		queues:      queues,
-		debt:        debt,
+	}
+	for i := range s.queues {
+		s.queues[i] = newCodel[struct{}](shortTimeout, longTimeout)
+		s.debt[i] = expDecay{
+			decay: debtDecay,
+			last:  now,
+		}
 	}
 	s.bg.Once(s.background)
 

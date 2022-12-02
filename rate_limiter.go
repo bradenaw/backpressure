@@ -39,8 +39,8 @@ func NewRateLimiter(
 	debtDecay float64,
 ) *RateLimiter {
 	now := time.Now()
-	queues := make([]codel[rlWaiter], nPriorities)
-	debt := make([]expDecay, nPriorities)
+	var queues [nPriorities]codel[rlWaiter]
+	var debt [nPriorities]expDecay
 	for i := range queues {
 		queues[i] = newCodel[rlWaiter](shortTimeout, longTimeout)
 		debt[i] = expDecay{
@@ -94,8 +94,8 @@ func (rl *RateLimiter) background(
 	shortTimeout time.Duration,
 	rate float64,
 	burst float64,
-	queues []codel[rlWaiter],
-	debt []expDecay,
+	queues [nPriorities]codel[rlWaiter],
+	debt [nPriorities]expDecay,
 	start time.Time,
 ) {
 	tokens := float64(0)
