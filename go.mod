@@ -1,4 +1,4 @@
-module github.com/bradenaw/load_mgmt
+module github.com/bradenaw/backpressure
 
 go 1.18
 
