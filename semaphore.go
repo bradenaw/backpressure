@@ -16,8 +16,8 @@ type Semaphore struct {
 	m           sync.Mutex
 	capacity    int
 	outstanding int
-	queues      [nPriorities]codel[struct{}]
-	debt        [nPriorities]expDecay
+	queues      []codel[struct{}]
+	debt        []expDecay
 }
 
 type SemaphoreTicket struct {
@@ -25,6 +25,7 @@ type SemaphoreTicket struct {
 }
 
 func NewSemaphore(
+	priorities int,
 	shortTimeout time.Duration,
 	longTimeout time.Duration,
 	capacity int,
@@ -36,9 +37,12 @@ func NewSemaphore(
 		capacity:     capacity,
 		shortTimeout: shortTimeout,
 		bg:           xsync.NewGroup(context.Background()),
+		queues:       make([]codel[struct{}], priorities),
+		debt:         make([]expDecay, priorities),
 
 		outstanding: 0,
 	}
+
 	for i := range s.queues {
 		s.queues[i] = newCodel[struct{}](shortTimeout, longTimeout)
 		s.debt[i] = expDecay{
@@ -51,8 +55,7 @@ func NewSemaphore(
 	return s
 }
 
-func (s *Semaphore) Admit(ctx context.Context) (*SemaphoreTicket, error) {
-	p, _ := ContextPriority(ctx)
+func (s *Semaphore) Admit(ctx context.Context, p Priority) (*SemaphoreTicket, error) {
 	now := time.Now()
 	s.m.Lock()
 	if float64(s.outstanding)+s.debt[p].get(now) < float64(s.capacity) {

@@ -32,6 +32,7 @@ type rateChange struct {
 }
 
 func NewRateLimiter(
+	priorities int,
 	shortTimeout time.Duration,
 	longTimeout time.Duration,
 	rate float64,
@@ -39,8 +40,8 @@ func NewRateLimiter(
 	debtDecay float64,
 ) *RateLimiter {
 	now := time.Now()
-	var queues [nPriorities]codel[rlWaiter]
-	var debt [nPriorities]expDecay
+	queues := make([]codel[rlWaiter], priorities)
+	debt := make([]expDecay, priorities)
 	for i := range queues {
 		queues[i] = newCodel[rlWaiter](shortTimeout, longTimeout)
 		debt[i] = expDecay{
@@ -61,8 +62,7 @@ func NewRateLimiter(
 	return rl
 }
 
-func (rl *RateLimiter) Wait(ctx context.Context, tokens float64) error {
-	p, _ := ContextPriority(ctx)
+func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) error {
 	w := newCodelWaiter(time.Now(), rlWaiter{
 		p:      p,
 		tokens: tokens,
@@ -94,8 +94,8 @@ func (rl *RateLimiter) background(
 	shortTimeout time.Duration,
 	rate float64,
 	burst float64,
-	queues [nPriorities]codel[rlWaiter],
-	debt [nPriorities]expDecay,
+	queues []codel[rlWaiter],
+	debt []expDecay,
 	start time.Time,
 ) {
 	tokens := float64(0)
