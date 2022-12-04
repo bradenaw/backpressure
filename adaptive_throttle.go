@@ -24,13 +24,13 @@ type AdaptiveThrottle struct {
 	accepts  []timeBucketedCounter
 }
 
-func NewAdaptiveThrottle(priorities int, k float64) AdaptiveThrottle {
+func NewAdaptiveThrottle(priorities int, k float64, d time.Duration) AdaptiveThrottle {
 	now := time.Now()
 	requests := make([]timeBucketedCounter, priorities)
 	accepts := make([]timeBucketedCounter, priorities)
 	for i := range requests {
-		requests[i] = newTimeBucketedCounter(now, 10*time.Second, 24)
-		accepts[i] = newTimeBucketedCounter(now, 10*time.Second, 24)
+		requests[i] = newTimeBucketedCounter(now, d/10, 10)
+		accepts[i] = newTimeBucketedCounter(now, d/10, 10)
 	}
 
 	return AdaptiveThrottle{
