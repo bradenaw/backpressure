@@ -20,15 +20,23 @@ type AdaptiveThrottle struct {
 	k float64
 
 	m        sync.Mutex
-	requests []expDecay
-	accepts  []expDecay
+	requests []timeBucketedCounter
+	accepts  []timeBucketedCounter
 }
 
 func NewAdaptiveThrottle(priorities int, k float64) AdaptiveThrottle {
+	now := time.Now()
+	requests := make([]timeBucketedCounter, priorities)
+	accepts := make([]timeBucketedCounter, priorities)
+	for i := range requests {
+		requests[i] = newTimeBucketedCounter(now, 10*time.Second, 24)
+		accepts[i] = newTimeBucketedCounter(now, 10*time.Second, 24)
+	}
+
 	return AdaptiveThrottle{
 		k:        k,
-		requests: make([]expDecay, priorities),
-		accepts:  make([]expDecay, priorities),
+		requests: requests,
+		accepts:  accepts,
 	}
 }
 
@@ -40,8 +48,8 @@ func WithAdaptiveThrottle[T any](
 	now := time.Now()
 
 	at.m.Lock()
-	requests := at.requests[int(p)].get(now)
-	accepts := at.accepts[int(p)].get(now)
+	requests := float64(at.requests[int(p)].get(now))
+	accepts := float64(at.accepts[int(p)].get(now))
 	at.m.Unlock()
 
 	rejectionProbability := math.Max(0, (requests-at.k*accepts)/(requests+1))
@@ -68,4 +76,42 @@ func WithAdaptiveThrottle[T any](
 	at.m.Unlock()
 
 	return t, err
+}
+
+type timeBucketedCounter struct {
+	width time.Duration
+
+	last    time.Time
+	count   int
+	buckets []int
+	head    int
+}
+
+func newTimeBucketedCounter(now time.Time, width time.Duration, n int) timeBucketedCounter {
+	return timeBucketedCounter{
+		width:   width,
+		last:    now,
+		buckets: make([]int, n),
+	}
+}
+
+func (c *timeBucketedCounter) add(now time.Time, x int) {
+	c.get(now)
+	c.buckets[c.head] += x
+	c.count += x
+}
+
+func (c *timeBucketedCounter) get(now time.Time) int {
+	elapsed := now.Sub(c.last)
+	bucketsPassed := int(elapsed / c.width)
+	for i := 0; i < bucketsPassed; i++ {
+		nextIdx := (c.head + 1) % len(c.buckets)
+		c.count -= c.buckets[nextIdx]
+		c.buckets[nextIdx] = 0
+		c.head = nextIdx
+	}
+	if bucketsPassed > 0 {
+		c.last = now
+	}
+	return c.count
 }
