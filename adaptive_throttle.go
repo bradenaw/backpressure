@@ -104,6 +104,9 @@ func (c *timeBucketedCounter) add(now time.Time, x int) {
 func (c *timeBucketedCounter) get(now time.Time) int {
 	elapsed := now.Sub(c.last)
 	bucketsPassed := int(elapsed / c.width)
+	if bucketsPassed >= len(c.buckets) {
+		bucketsPassed = len(c.buckets)
+	}
 	for i := 0; i < bucketsPassed; i++ {
 		nextIdx := (c.head + 1) % len(c.buckets)
 		c.count -= c.buckets[nextIdx]
