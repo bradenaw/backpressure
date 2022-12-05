@@ -2,3 +2,5 @@ github.com/bradenaw/juniper v0.10.0 h1:doiS41jo2iQ/tDIbisWA+eEe2NN1ZwU3rkI+3L1V6
 github.com/bradenaw/juniper v0.10.0/go.mod h1:Z2B7aJlQ7xbfWsnMLROj5t/5FQ94/MkIdKC30J4WvzI=
 golang.org/x/exp v0.0.0-20220217172124-1812c5b45e43 h1:Xo03zeNci09uW1tocp7+8X7YizAdkD/BKNkl9lsqKHQ=
 golang.org/x/exp v0.0.0-20220217172124-1812c5b45e43/go.mod h1:lRnflEfy7nRvpQCcpkwaSP1nkrSyjkyFNcqXKfSXLMc=
+golang.org/x/sync v0.0.0-20210220032951-036812b2e83c h1:5KslGYwFpkhGh+Q16bwMP3cOontH8FOep7tGV86Y7SQ=
+golang.org/x/sync v0.0.0-20210220032951-036812b2e83c/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=

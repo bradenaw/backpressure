@@ -96,8 +96,8 @@ func (s *Semaphore) background(ctx context.Context) {
 		case <-ticker.C:
 			now := time.Now()
 			s.m.Lock()
-			for _, queue := range s.queues {
-				queue.reap(now)
+			for i := range s.queues {
+				s.queues[i].reap(now)
 			}
 			s.admitLocked(now)
 			s.m.Unlock()
@@ -110,13 +110,12 @@ func (s *Semaphore) Close() {
 }
 
 func (s *Semaphore) admitLocked(now time.Time) {
-	for p, queue := range s.queues {
-		for !queue.empty() {
-			if float64(s.outstanding)+s.debt[p].get(now) < float64(s.capacity) {
-				_, ok := s.queues[p].pop(now)
-				if ok {
-					s.outstanding++
-				}
+	for p := range s.queues {
+		queue := &s.queues[p]
+		for !queue.empty() && float64(s.outstanding)+s.debt[p].get(now) < float64(s.capacity) {
+			_, ok := queue.pop(now)
+			if ok {
+				s.outstanding++
 			}
 		}
 	}

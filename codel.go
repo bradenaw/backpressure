@@ -21,6 +21,7 @@ func newCodel[T any](shortTimeout time.Duration, longTimeout time.Duration) code
 		shortTimeout: shortTimeout,
 		longTimeout:  longTimeout,
 		lastEmpty:    time.Now(),
+		mode:         codelModeFIFO,
 	}
 }
 
@@ -44,35 +45,34 @@ func (c *codel[T]) next() (T, bool) {
 	}
 	switch c.mode {
 	case codelModeFIFO:
-		return c.items.Item(0).t, true
+		return c.items.Front().t, true
 	case codelModeLIFO:
-		return c.items.Item(c.items.Len() - 1).t, true
+		return c.items.Back().t, true
 	default:
 		panic("unreachable")
 	}
 }
 
 func (c *codel[T]) pop(now time.Time) (T, bool) {
-	if c.items.Len() == 0 {
-		var zero T
-		return zero, false
+	var zero T
+	for c.items.Len() != 0 {
+		var w *codelWaiter[T]
+		switch c.mode {
+		case codelModeFIFO:
+			w = c.items.PopFront()
+		case codelModeLIFO:
+			w = c.items.PopBack()
+		default:
+			panic("unreachable")
+		}
+		c.setMode(now)
+		ok := w.admit()
+		if !ok {
+			continue
+		}
+		return w.t, true
 	}
-	var w *codelWaiter[T]
-	switch c.mode {
-	case codelModeFIFO:
-		w = c.items.PopFront()
-	case codelModeLIFO:
-		w = c.items.PopBack()
-	default:
-		panic("unreachable")
-	}
-	c.setMode(now)
-	ok := w.admit()
-	if !ok {
-		var zero T
-		return zero, false
-	}
-	return w.t, true
+	return zero, false
 }
 
 func (c *codel[T]) push(now time.Time, w *codelWaiter[T]) {
@@ -85,10 +85,7 @@ func (c *codel[T]) reap(now time.Time) {
 	if c.mode == codelModeLIFO {
 		timeout = c.shortTimeout
 	}
-	for c.items.Len() > 0 {
-		if now.Sub(c.items.Item(0).enqueued) <= timeout {
-			break
-		}
+	for c.items.Len() > 0 && now.Sub(c.items.Front().enqueued) > timeout {
 		item := c.items.PopFront()
 		item.drop()
 	}
