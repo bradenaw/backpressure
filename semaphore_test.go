@@ -3,6 +3,7 @@ package backpressure
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,7 +28,8 @@ func TestSemaphoreStress(t *testing.T) {
 		5*time.Millisecond,
 		100*time.Millisecond,
 		capacity,
-		0.99,
+		0.05,
+		0.10,
 	)
 	defer sem.Close()
 
@@ -40,10 +42,10 @@ func TestSemaphoreStress(t *testing.T) {
 			eg.Go(func() error {
 				for time.Since(start) < duration {
 					admitStart := time.Now()
-					ticket, err := sem.Admit(context.Background(), Priority(p))
+					ticket, err := sem.Acquire(context.Background(), Priority(p))
 					if err != nil {
 						atomic.AddUint32(&rejections[p], 1)
-						time.Sleep(holdTime)
+						time.Sleep(jitter(holdTime))
 						continue
 					}
 					atomic.AddInt64(&waits[p], time.Since(admitStart).Nanoseconds())
@@ -54,8 +56,8 @@ func TestSemaphoreStress(t *testing.T) {
 					}
 					time.Sleep(holdTime)
 					atomic.AddInt32(&concurrent, -1)
-					ticket.Close()
-					time.Sleep(holdTime / 4)
+					ticket.Release()
+					time.Sleep(jitter(holdTime / 4))
 				}
 				return nil
 			})
@@ -75,4 +77,8 @@ func TestSemaphoreStress(t *testing.T) {
 	for i := range waits {
 		t.Logf("avgWait: %s", time.Duration(waits[i]/int64(acquires[i])))
 	}
+}
+
+func jitter(d time.Duration) time.Duration {
+	return d/2 + time.Duration(rand.Int63n(int64(d)))
 }

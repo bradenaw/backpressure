@@ -10,8 +10,9 @@ import (
 )
 
 type Semaphore struct {
-	shortTimeout time.Duration
-	bg           *xsync.Group
+	shortTimeout          time.Duration
+	debtForgivePerSuccess float64
+	bg                    *xsync.Group
 
 	m           sync.Mutex
 	capacity    int
@@ -29,24 +30,26 @@ func NewSemaphore(
 	shortTimeout time.Duration,
 	longTimeout time.Duration,
 	capacity int,
-	debtDecay float64,
+	debtDecayPctPerSec float64,
+	debtForgivePerSuccess float64,
 ) *Semaphore {
 	now := time.Now()
 
 	s := &Semaphore{
-		capacity:     capacity,
-		shortTimeout: shortTimeout,
-		bg:           xsync.NewGroup(context.Background()),
-		queues:       make([]codel[struct{}], priorities),
-		debt:         make([]expDecay, priorities),
+		shortTimeout:          shortTimeout,
+		debtForgivePerSuccess: debtForgivePerSuccess,
+		bg:                    xsync.NewGroup(context.Background()),
 
+		capacity:    capacity,
+		queues:      make([]codel[struct{}], priorities),
+		debt:        make([]expDecay, priorities),
 		outstanding: 0,
 	}
 
 	for i := range s.queues {
 		s.queues[i] = newCodel[struct{}](shortTimeout, longTimeout)
 		s.debt[i] = expDecay{
-			decay: debtDecay,
+			decay: debtDecayPctPerSec,
 			last:  now,
 		}
 	}
@@ -55,11 +58,14 @@ func NewSemaphore(
 	return s
 }
 
-func (s *Semaphore) Admit(ctx context.Context, p Priority) (*SemaphoreTicket, error) {
+func (s *Semaphore) Acquire(ctx context.Context, p Priority) (*SemaphoreTicket, error) {
 	now := time.Now()
 	s.m.Lock()
-	if float64(s.outstanding)+s.debt[p].get(now) < float64(s.capacity) {
+	if float64(s.outstanding)+s.debt[p].get(now)+1 < float64(s.capacity) {
 		s.outstanding++
+		for i := int(p) + 1; i < len(s.debt); i++ {
+			s.debt[i].add(now, math.Max(-s.debtForgivePerSuccess, -s.debt[i].get(now)))
+		}
 		s.m.Unlock()
 		return &SemaphoreTicket{parent: s}, nil
 	}
@@ -112,7 +118,7 @@ func (s *Semaphore) Close() {
 func (s *Semaphore) admitLocked(now time.Time) {
 	for p := range s.queues {
 		queue := &s.queues[p]
-		for !queue.empty() && float64(s.outstanding)+s.debt[p].get(now) < float64(s.capacity) {
+		for !queue.empty() && float64(s.outstanding)+s.debt[p].get(now)+1 < float64(s.capacity) {
 			_, ok := queue.pop(now)
 			if ok {
 				s.outstanding++
@@ -121,7 +127,7 @@ func (s *Semaphore) admitLocked(now time.Time) {
 	}
 }
 
-func (t *SemaphoreTicket) Close() {
+func (t *SemaphoreTicket) Release() {
 	if t.parent == nil {
 		panic("tried to close already closed SemaphoreTicket")
 	}
