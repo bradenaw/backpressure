@@ -25,11 +25,11 @@ func TestSemaphoreStress(t *testing.T) {
 
 	sem := NewSemaphore(
 		len(nUsers),
-		5*time.Millisecond,
-		100*time.Millisecond,
 		capacity,
-		0.05,
-		0.10,
+		SemaphoreShortTimeout(5*time.Millisecond),
+		SemaphoreLongTimeout(100*time.Millisecond),
+		SemaphoreDebtDecayPctPerSec(0.05),
+		SemaphoreDebtForgivePerSuccess(0.10),
 	)
 	defer sem.Close()
 

@@ -25,19 +25,58 @@ type SemaphoreTicket struct {
 	parent *Semaphore
 }
 
+type SemaphoreOption struct{ f func(*semaphoreOptions) }
+
+type semaphoreOptions struct {
+	shortTimeout          time.Duration
+	longTimeout           time.Duration
+	debtDecayPctPerSec    float64
+	debtForgivePerSuccess float64
+}
+
+func SemaphoreShortTimeout(d time.Duration) SemaphoreOption {
+	return SemaphoreOption{func(opts *semaphoreOptions) {
+		opts.shortTimeout = d
+	}}
+}
+
+func SemaphoreLongTimeout(d time.Duration) SemaphoreOption {
+	return SemaphoreOption{func(opts *semaphoreOptions) {
+		opts.longTimeout = d
+	}}
+}
+
+func SemaphoreDebtDecayPctPerSec(x float64) SemaphoreOption {
+	return SemaphoreOption{func(opts *semaphoreOptions) {
+		opts.debtDecayPctPerSec = x
+	}}
+}
+
+func SemaphoreDebtForgivePerSuccess(x float64) SemaphoreOption {
+	return SemaphoreOption{func(opts *semaphoreOptions) {
+		opts.debtForgivePerSuccess = x
+	}}
+}
+
 func NewSemaphore(
 	priorities int,
-	shortTimeout time.Duration,
-	longTimeout time.Duration,
 	capacity int,
-	debtDecayPctPerSec float64,
-	debtForgivePerSuccess float64,
+	options ...SemaphoreOption,
 ) *Semaphore {
+	opts := semaphoreOptions{
+		shortTimeout:          5 * time.Millisecond,
+		longTimeout:           100 * time.Millisecond,
+		debtDecayPctPerSec:    0.05,
+		debtForgivePerSuccess: 0.1,
+	}
+	for _, option := range options {
+		option.f(&opts)
+	}
 	now := time.Now()
 
 	s := &Semaphore{
-		shortTimeout:          shortTimeout,
-		debtForgivePerSuccess: debtForgivePerSuccess,
+		shortTimeout:          opts.shortTimeout,
+		debtForgivePerSuccess: opts.debtForgivePerSuccess,
 		bg:                    xsync.NewGroup(context.Background()),
 
 		capacity:    capacity,
@@ -47,9 +86,9 @@ func NewSemaphore(
 	}
 
 	for i := range s.queues {
-		s.queues[i] = newCodel[struct{}](shortTimeout, longTimeout)
+		s.queues[i] = newCodel[struct{}](opts.shortTimeout, opts.longTimeout)
 		s.debt[i] = expDecay{
-			decay: debtDecayPctPerSec,
+			decay: opts.debtDecayPctPerSec,
 			last:  now,
 		}
 	}
