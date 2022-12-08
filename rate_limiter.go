@@ -32,22 +32,62 @@ type rateChange struct {
 	c     chan struct{}
 }
 
+type RateLimiterOption struct{ f func(*rateLimiterOptions) }
+
+type rateLimiterOptions struct {
+	shortTimeout          time.Duration
+	longTimeout           time.Duration
+	debtDecayPctPerSec    float64
+	debtForgivePerSuccess float64
+}
+
+func RateLimiterShortTimeout(d time.Duration) RateLimiterOption {
+	return RateLimiterOption{func(opts *rateLimiterOptions) {
+		opts.shortTimeout = d
+	}}
+}
+
+func RateLimiterLongTimeout(d time.Duration) RateLimiterOption {
+	return RateLimiterOption{func(opts *rateLimiterOptions) {
+		opts.longTimeout = d
+	}}
+}
+
+func RateLimiterDebtDecayPctPerSec(x float64) RateLimiterOption {
+	return RateLimiterOption{func(opts *rateLimiterOptions) {
+		opts.debtDecayPctPerSec = x
+	}}
+}
+
+func RateLimiterDebtForgivePerSuccess(x float64) RateLimiterOption {
+	return RateLimiterOption{func(opts *rateLimiterOptions) {
+		opts.debtForgivePerSuccess = x
+	}}
+}
+
 func NewRateLimiter(
 	priorities int,
-	shortTimeout time.Duration,
-	longTimeout time.Duration,
 	rate float64,
 	burst float64,
-	debtDecay float64,
-	debtForgivePerSuccess float64,
+	options ...RateLimiterOption,
 ) *RateLimiter {
+	opts := rateLimiterOptions{
+		shortTimeout:          5 * time.Millisecond,
+		longTimeout:           100 * time.Millisecond,
+		debtDecayPctPerSec:    0.05,
+		debtForgivePerSuccess: 0.1,
+	}
+	for _, option := range options {
+		option.f(&opts)
+	}
+
 	now := time.Now()
 	queues := make([]codel[rlWaiter], priorities)
 	debt := make([]expDecay, priorities)
 	for i := range queues {
-		queues[i] = newCodel[rlWaiter](shortTimeout, longTimeout)
+		queues[i] = newCodel[rlWaiter](opts.shortTimeout, opts.longTimeout)
 		debt[i] = expDecay{
-			decay: debtDecay,
+			decay: opts.debtDecayPctPerSec,
 			last:  now,
 		}
 	}
@@ -59,7 +99,7 @@ func NewRateLimiter(
 		rateChange: make(chan rateChange),
 	}
 	rl.bg.Once(func(ctx context.Context) {
-		rl.background(ctx, shortTimeout, rate, burst, debtForgivePerSuccess, queues, now)
+		rl.background(ctx, opts.shortTimeout, rate, burst, opts.debtForgivePerSuccess, queues, now)
 	})
 
 	return rl

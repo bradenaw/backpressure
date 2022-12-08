@@ -11,16 +11,16 @@ import (
 func TestRateLimiterStress(t *testing.T) {
 	d := 10 * time.Second
 	rate := float64(20)
-	qpsByPriority := []int{5, 19, 10}
+	qpsByPriority := []int{5, 17, 10}
 
 	rl := NewRateLimiter(
 		len(qpsByPriority),
-		5*time.Millisecond,
-		100*time.Millisecond,
 		rate,
 		100,
-		0.05,
-		0.1,
+		RateLimiterShortTimeout(5*time.Millisecond),
+		RateLimiterLongTimeout(100*time.Millisecond),
+		RateLimiterDebtDecayPctPerSec(0.05),
+		RateLimiterDebtForgivePerSuccess(0.1),
 	)
 	defer rl.Close()
 
