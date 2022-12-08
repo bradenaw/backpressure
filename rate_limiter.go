@@ -14,7 +14,8 @@ var (
 )
 
 type RateLimiter struct {
-	bg *xsync.Group
+	bg   *xsync.Group
+	debt []expDecay
 
 	add        chan *codelWaiter[rlWaiter]
 	rateChange chan rateChange
@@ -38,6 +39,7 @@ func NewRateLimiter(
 	rate float64,
 	burst float64,
 	debtDecay float64,
+	debtForgivePerSuccess float64,
 ) *RateLimiter {
 	now := time.Now()
 	queues := make([]codel[rlWaiter], priorities)
@@ -51,12 +53,13 @@ func NewRateLimiter(
 	}
 
 	rl := &RateLimiter{
+		debt:       debt,
 		bg:         xsync.NewGroup(context.Background()),
 		add:        make(chan *codelWaiter[rlWaiter]),
 		rateChange: make(chan rateChange),
 	}
 	rl.bg.Once(func(ctx context.Context) {
-		rl.background(ctx, shortTimeout, rate, burst, queues, debt, now)
+		rl.background(ctx, shortTimeout, rate, burst, debtForgivePerSuccess, queues, now)
 	})
 
 	return rl
@@ -94,8 +97,8 @@ func (rl *RateLimiter) background(
 	shortTimeout time.Duration,
 	rate float64,
 	burst float64,
+	debtForgivePerSuccess float64,
 	queues []codel[rlWaiter],
-	debt []expDecay,
 	start time.Time,
 ) {
 	tokens := float64(0)
@@ -111,6 +114,8 @@ func (rl *RateLimiter) background(
 	// ready is delivered to when the next waiter is (probably) ready to be admitted.
 	ready := notReady
 
+	timerRunning := false
+
 	refill := func(now time.Time) {
 		// Refill tokens.
 		tokens += now.Sub(lastFill).Seconds() * rate
@@ -123,8 +128,8 @@ func (rl *RateLimiter) background(
 	admit := func(now time.Time) {
 		// Reap all of the queues, which may flip them to short timeout + LIFO, which might change
 		// who's next.
-		for _, queue := range queues {
-			queue.reap(now)
+		for i := range queues {
+			queues[i].reap(now)
 		}
 
 		refill(now)
@@ -133,14 +138,15 @@ func (rl *RateLimiter) background(
 		// to wake. Because we always prefer to admit higher priorities, if we find anybody that
 		// isn't ready to wake yet, then they're the next one to be admitted and we can set the
 		// timer accordingly.
-		for p, queue := range queues {
+		for p := range queues {
+			queue := &queues[p]
 			for {
 				item, ok := queue.next()
 				if !ok {
 					// No high-priority waiters, check the next priority down.
 					break
 				}
-				need := tokens + debt[p].get(now) - item.tokens
+				need := item.tokens - (tokens - rl.debt[p].get(now))
 				if need <= 0 {
 					// We can fill their request right now.
 					item, ok := queue.pop(now)
@@ -153,21 +159,17 @@ func (rl *RateLimiter) background(
 					if nextTimer == nil {
 						nextTimer = time.NewTimer(nextReady)
 					} else {
-						if !nextTimer.Stop() {
+						if !nextTimer.Stop() && timerRunning {
 							<-nextTimer.C
 						}
 						nextTimer.Reset(nextReady)
 					}
+					timerRunning = true
 					ready = nextTimer.C
 					// There's already a waiter for a higher priority, so don't bother even looking
 					// at the lower-priority queues.
 					return
 				}
-			}
-		}
-		if nextTimer != nil {
-			if !nextTimer.Stop() {
-				<-nextTimer.C
 			}
 		}
 		// If we're here, all of the queues are empty.
@@ -185,23 +187,32 @@ func (rl *RateLimiter) background(
 		case w := <-rl.add:
 			now := time.Now()
 			refill(now)
-			need := tokens + debt[int(w.t.p)].get(now) - w.t.tokens
+			hasHigherPriority := false
+			for p := 0; p < int(w.t.p); p++ {
+				hasHigherPriority = hasHigherPriority || !queues[p].empty()
+			}
+			need := w.t.tokens - (tokens - rl.debt[int(w.t.p)].get(now))
 			// See if we can admit them right away.
-			if need <= 0 {
+			if !hasHigherPriority && need <= 0 {
 				ok := w.admit()
 				if ok {
 					tokens -= w.t.tokens
+				}
+				for i := int(w.t.p) + 1; i < len(queues); i++ {
+					rl.debt[i].add(now, math.Max(-rl.debt[i].get(now), need*debtForgivePerSuccess))
 				}
 			} else {
 				// Otherwise, this waiter needs to block for a while. Penalize the lower priority
 				// queues to try to make sure waiters of this priority don't need to block in the
 				// future.
 				for i := int(w.t.p) + 1; i < len(queues); i++ {
-					debt[i].add(now, math.Min(burst-debt[i].get(now), need))
+					rl.debt[i].add(now, math.Min(burst-rl.debt[i].get(now), need))
 				}
 				queues[int(w.t.p)].push(now, w)
 				admit(now)
 			}
+			queues[int(w.t.p)].push(now, w)
+			admit(now)
 		case rc := <-rl.rateChange:
 			rate = rc.rate
 			burst = rc.burst
@@ -213,6 +224,7 @@ func (rl *RateLimiter) background(
 		case <-ready:
 			// Timer fired, somebody is ready to be admitted. Probably. Might've tripped over codel
 			// lifetime but admit handles that.
+			timerRunning = false
 			admit(time.Now())
 		}
 	}
