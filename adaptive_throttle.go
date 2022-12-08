@@ -56,6 +56,9 @@ func WithAdaptiveThrottle[T any](
 
 	if rand.Float64() < rejectionProbability {
 		var zero T
+		at.m.Lock()
+		at.requests[int(p)].add(now, 1)
+		at.m.Unlock()
 		return zero, ErrClientRejection
 	}
 
