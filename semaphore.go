@@ -9,6 +9,24 @@ import (
 	"github.com/bradenaw/juniper/xsync"
 )
 
+// Semaphore is a way to bound concurrency and similar to golang.org/x/sync/semaphore, with two
+// major differences:
+//
+// 1. It is prioritized, preferring to accept higher priority requests first.
+//
+// 2. Each queue of waiters is a CoDel, which is not fair but can behave better in a real-time
+// system under load.
+//
+// In order to minimize wait times for high-priority requests, it self balances using "debt." Debt
+// is tracked per priority and is the number of tickets that must be left in the semaphore before a
+// given request may be admitted.
+//
+// Debt is self-adjusting: whenever a high-priority `Acquire()` cannot immediately be accepted, the
+// debt for all lower priorities is increased. Intuitively, this request would not have had to wait
+// if this debt already existed, so the semaphore self-corrects by adding it. Whenever a
+// high-priority `Acquire()` can be admitted without waiting, then any existing debt may not have
+// been necessary and so some of it is forgiven. Additionally, debt decays over time, since anything
+// the semaphore has learned about a load pattern may become out-of-date as load changes.
 type Semaphore struct {
 	shortTimeout          time.Duration
 	debtForgivePerSuccess float64

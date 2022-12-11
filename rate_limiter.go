@@ -10,9 +10,30 @@ import (
 )
 
 var (
+	// ErrRejected is returned by RateLimiter and Semaphore when a request times out before being
+	// admitted.
 	ErrRejected = errors.New("rejected")
 )
 
+// RateLimiter is used to bound the rate of some operation. It is a leaky-bucket similar to
+// golang.org/x/time/rate, with two major differences:
+//
+// 1. It is prioritized, preferring to accept higher priority requests first.
+//
+// 2. Each queue of waiters is a CoDel, which is not fair but can behave better in a real-time
+// system under load.
+//
+// In order to minimize wait times for high-priority requests, it self balances using "debt." Debt
+// is tracked per priority and is the number of tokens that must be left in the bucket before a
+// given priority may be admitted. For example, if `Priority(1)` has a debt of 5, then a `Wait(ctx,
+// Priority(1), 3)` cannot be admitted until there are 8 tokens in the bucket.
+//
+// Debt is self-adjusting: whenever a high-priority `Wait()` cannot immediately be accepted, the
+// debt for all lower priorities is increased. Intuitively, this request would not have had to wait
+// if this debt already existed, so the bucket self-corrects by adding it. Whenever a high-priority
+// `Acquire()` can be admitted without waiting, then any existing debt may not have been necessary
+// and so some of it is forgiven. Additionally, debt decays over time, since anything the bucket has
+// learned about a load pattern may become out-of-date as load changes.
 type RateLimiter struct {
 	bg   *xsync.Group
 	debt []expDecay
