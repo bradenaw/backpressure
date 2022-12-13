@@ -42,7 +42,7 @@ func TestSemaphoreStress(t *testing.T) {
 			eg.Go(func() error {
 				for time.Since(start) < duration {
 					admitStart := time.Now()
-					ticket, err := sem.Acquire(context.Background(), Priority(p))
+					err := sem.Acquire(context.Background(), Priority(p), 1)
 					if err != nil {
 						atomic.AddUint32(&rejections[p], 1)
 						time.Sleep(jitter(holdTime))
@@ -56,7 +56,7 @@ func TestSemaphoreStress(t *testing.T) {
 					}
 					time.Sleep(holdTime)
 					atomic.AddInt32(&concurrent, -1)
-					ticket.Release()
+					sem.Release(1)
 					time.Sleep(jitter(holdTime / 4))
 				}
 				return nil

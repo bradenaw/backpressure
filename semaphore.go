@@ -35,12 +35,8 @@ type Semaphore struct {
 	m           sync.Mutex
 	capacity    int
 	outstanding int
-	queues      []codel[struct{}]
+	queues      []codel[int]
 	debt        []expDecay
-}
-
-type SemaphoreTicket struct {
-	parent *Semaphore
 }
 
 type SemaphoreOption struct{ f func(*semaphoreOptions) }
@@ -98,13 +94,13 @@ func NewSemaphore(
 		bg:                    xsync.NewGroup(context.Background()),
 
 		capacity:    capacity,
-		queues:      make([]codel[struct{}], priorities),
+		queues:      make([]codel[int], priorities),
 		debt:        make([]expDecay, priorities),
 		outstanding: 0,
 	}
 
 	for i := range s.queues {
-		s.queues[i] = newCodel[struct{}](opts.shortTimeout, opts.longTimeout)
+		s.queues[i] = newCodel[int](opts.shortTimeout, opts.longTimeout)
 		s.debt[i] = expDecay{
 			decay: opts.debtDecayPctPerSec,
 			last:  now,
@@ -115,32 +111,68 @@ func NewSemaphore(
 	return s
 }
 
-func (s *Semaphore) Acquire(ctx context.Context, p Priority) (*SemaphoreTicket, error) {
+// Acquire attempts to acquire some number of tokens from the semaphore on behalf of the given
+// priority. If Acquire returns nil, these tokens should be returned to the semaphore when the
+// caller is finished with them by using Release. Acquire returns non-nil if the given context
+// expires before the tokens can be acquired, or if the request is rejected for timing out with the
+// semaphore's own timeout.
+func (s *Semaphore) Acquire(ctx context.Context, p Priority, tokens int) error {
 	now := time.Now()
 	s.m.Lock()
-	if float64(s.outstanding)+s.debt[p].get(now)+1 < float64(s.capacity) {
-		s.outstanding++
+	allEmpty := true
+	for i := 0; i < int(p); i++ {
+		if !s.queues[i].empty() {
+			allEmpty = false
+			break
+		}
+	}
+	if allEmpty && float64(s.outstanding)+s.debt[p].get(now) < float64(s.capacity)-float64(tokens) {
+		s.outstanding += tokens
+		if s.outstanding > s.capacity {
+			panic("unbalanced Semaphore.Acquire and Semaphore.Release")
+		}
 		for i := int(p) + 1; i < len(s.debt); i++ {
-			s.debt[i].add(now, math.Max(-s.debtForgivePerSuccess, -s.debt[i].get(now)))
+			s.debt[i].add(now, math.Max(
+				-(s.debtForgivePerSuccess*float64(tokens)),
+				-s.debt[i].get(now),
+			))
 		}
 		s.m.Unlock()
-		return &SemaphoreTicket{parent: s}, nil
+		return nil
 	}
 
-	w := newCodelWaiter(now, struct{}{})
+	w := newCodelWaiter(now, tokens)
 	s.queues[p].push(now, w)
 	for i := int(p) + 1; i < len(s.debt); i++ {
-		s.debt[i].add(now, math.Min(1, float64(s.capacity)-s.debt[i].get(now)))
+		s.debt[i].add(now, math.Min(float64(tokens), float64(s.capacity)-s.debt[i].get(now)))
 	}
 	s.m.Unlock()
 
 	err := w.wait(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return &SemaphoreTicket{parent: s}, nil
+	return nil
 }
 
+// Release returns the given number of tokens to the semaphore. It should only be called if these
+// tokens are known to be acquired from the semaphore with a corresponding Acquire.
+func (s *Semaphore) Release(tokens int) {
+	now := time.Now()
+
+	s.m.Lock()
+	s.outstanding -= tokens
+	if s.outstanding < 0 {
+		panic("unbalanced Semaphore.Acquire and Semaphore.Release")
+	}
+	s.admitLocked(now)
+	s.m.Unlock()
+}
+
+// SetCapacity sets the maximum number of outstanding tokens for the semaphore. If more tokens than
+// this new value are already outstanding the semaphore simply waits for them to be released, it has
+// no way of recalling them. If the new capacity is higher than the old, this will immediately admit
+// the waiters it can.
 func (s *Semaphore) SetCapacity(capacity int) {
 	now := time.Now()
 	s.m.Lock()
@@ -175,26 +207,21 @@ func (s *Semaphore) Close() {
 func (s *Semaphore) admitLocked(now time.Time) {
 	for p := range s.queues {
 		queue := &s.queues[p]
-		for !queue.empty() && float64(s.outstanding)+s.debt[p].get(now)+1 < float64(s.capacity) {
-			_, ok := queue.pop(now)
+		for {
+			nextTokens, ok := queue.next()
+			if !ok {
+				break
+			}
+			if !(float64(s.outstanding)+s.debt[p].get(now) < float64(s.capacity)-float64(nextTokens)) {
+				break
+			}
+			_, ok = queue.pop(now)
 			if ok {
-				s.outstanding++
+				s.outstanding += nextTokens
 			}
 		}
+		if !queue.empty() {
+			return
+		}
 	}
-}
-
-func (t *SemaphoreTicket) Release() {
-	if t.parent == nil {
-		panic("tried to close already closed SemaphoreTicket")
-	}
-
-	now := time.Now()
-
-	t.parent.m.Lock()
-	t.parent.outstanding--
-	t.parent.admitLocked(now)
-	t.parent.m.Unlock()
-
-	t.parent = nil
 }
