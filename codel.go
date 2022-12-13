@@ -53,26 +53,31 @@ func (c *codel[T]) next() (T, bool) {
 	}
 }
 
+// pop pops the next waiter from the codel. Returns zero, false if the next waiter has already been
+// abandoned or if the queue is empty.
+//
+// popping the next still-waiting waiter requires doing this inside of a loop checking if the codel
+// is empty.
 func (c *codel[T]) pop(now time.Time) (T, bool) {
 	var zero T
-	for c.items.Len() != 0 {
-		var w *codelWaiter[T]
-		switch c.mode {
-		case codelModeFIFO:
-			w = c.items.PopFront()
-		case codelModeLIFO:
-			w = c.items.PopBack()
-		default:
-			panic("unreachable")
-		}
-		c.setMode(now)
-		ok := w.admit()
-		if !ok {
-			continue
-		}
-		return w.t, true
+	if c.items.Len() == 0 {
+		return zero, false
 	}
-	return zero, false
+	var w *codelWaiter[T]
+	switch c.mode {
+	case codelModeFIFO:
+		w = c.items.PopFront()
+	case codelModeLIFO:
+		w = c.items.PopBack()
+	default:
+		panic("unreachable")
+	}
+	c.setMode(now)
+	ok := w.admit()
+	if !ok {
+		return zero, false
+	}
+	return w.t, true
 }
 
 func (c *codel[T]) push(now time.Time, w *codelWaiter[T]) {
@@ -118,6 +123,7 @@ func newCodelWaiter[T any](now time.Time, t T) *codelWaiter[T] {
 func (w *codelWaiter[T]) wait(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
+		// They already decided to wake us, so we can't expire yet.
 		if !atomic.CompareAndSwapUint32(&w.s, 0, 2) {
 			return nil
 		}
@@ -131,6 +137,7 @@ func (w *codelWaiter[T]) wait(ctx context.Context) error {
 	}
 }
 
+// returns true if the waiter will return nil from wait
 func (w *codelWaiter[T]) admit() bool {
 	ok := atomic.CompareAndSwapUint32(&w.s, 0, 1)
 	w.c <- true
