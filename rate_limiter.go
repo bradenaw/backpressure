@@ -174,6 +174,7 @@ func (rl *RateLimiter) background(
 	var notReady <-chan time.Time
 	// ready is delivered to when the next waiter is (probably) ready to be admitted.
 	ready := notReady
+	tickerC := notReady
 
 	timerRunning := false
 
@@ -235,6 +236,7 @@ func (rl *RateLimiter) background(
 		}
 		// If we're here, all of the queues are empty.
 		ready = notReady
+		tickerC = notReady
 	}
 
 	for {
@@ -273,12 +275,13 @@ func (rl *RateLimiter) background(
 				admit(now)
 			}
 			queues[int(w.t.p)].push(now, w)
+			tickerC = ticker.C
 			admit(now)
 		case rc := <-rl.rateChange:
 			rate = rc.rate
 			burst = rc.burst
 			admit(time.Now())
-		case <-ticker.C:
+		case <-tickerC:
 			// Ticker used to make sure we're reaping regularly, which might mean adjusting the
 			// timeout of the codels. admit handles that and setting `ready` properly.
 			admit(time.Now())
