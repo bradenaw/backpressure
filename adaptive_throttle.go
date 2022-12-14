@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-// ErrClientRejection is returned by an AdaptiveThrottle when the request was not even sent to the
-// backend because it is overloaded.
-var ErrClientRejection = errors.New("rejected without sending: backend is unhealthy")
-
 // MarkAccepted marks the given err as "accepted" by the backend for the purposes of
 // AdaptiveThrottle. This should be done for regular protocol errors that do not mean the backend is
 // unhealthy.
@@ -39,8 +35,8 @@ type AdaptiveThrottle struct {
 	k float64
 
 	m        sync.Mutex
-	requests []timeBucketedCounter
-	accepts  []timeBucketedCounter
+	requests []windowedCounter
+	accepts  []windowedCounter
 }
 
 // NewAdaptiveThrottle returns an AdaptiveThrottle.
@@ -59,11 +55,11 @@ type AdaptiveThrottle struct {
 // success rate.
 func NewAdaptiveThrottle(priorities int, k float64, d time.Duration) *AdaptiveThrottle {
 	now := time.Now()
-	requests := make([]timeBucketedCounter, priorities)
-	accepts := make([]timeBucketedCounter, priorities)
+	requests := make([]windowedCounter, priorities)
+	accepts := make([]windowedCounter, priorities)
 	for i := range requests {
-		requests[i] = newTimeBucketedCounter(now, d/10, 10)
-		accepts[i] = newTimeBucketedCounter(now, d/10, 10)
+		requests[i] = newWindowedCounter(now, d/10, 10)
+		accepts[i] = newWindowedCounter(now, d/10, 10)
 	}
 
 	return &AdaptiveThrottle{
@@ -117,48 +113,4 @@ func WithAdaptiveThrottle[T any](
 	at.m.Unlock()
 
 	return t, err
-}
-
-type timeBucketedCounter struct {
-	width time.Duration
-
-	last    time.Time
-	count   int
-	buckets []int
-	head    int
-}
-
-func newTimeBucketedCounter(now time.Time, width time.Duration, n int) timeBucketedCounter {
-	return timeBucketedCounter{
-		width:   width,
-		last:    now,
-		buckets: make([]int, n),
-	}
-}
-
-func (c *timeBucketedCounter) add(now time.Time, x int) {
-	c.get(now)
-	c.buckets[c.head] += x
-	c.count += x
-}
-
-func (c *timeBucketedCounter) get(now time.Time) int {
-	elapsed := now.Sub(c.last)
-	bucketsPassed := int(elapsed / c.width)
-	if bucketsPassed < 0 {
-		bucketsPassed = 0
-	}
-	if bucketsPassed >= len(c.buckets) {
-		bucketsPassed = len(c.buckets)
-	}
-	for i := 0; i < bucketsPassed; i++ {
-		nextIdx := (c.head + 1) % len(c.buckets)
-		c.count -= c.buckets[nextIdx]
-		c.buckets[nextIdx] = 0
-		c.head = nextIdx
-	}
-	if bucketsPassed > 0 {
-		c.last = now
-	}
-	return c.count
 }

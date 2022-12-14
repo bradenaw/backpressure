@@ -2,17 +2,10 @@ package backpressure
 
 import (
 	"context"
-	"errors"
 	"math"
 	"time"
 
 	"github.com/bradenaw/juniper/xsync"
-)
-
-var (
-	// ErrRejected is returned by RateLimiter and Semaphore when a request times out before being
-	// admitted.
-	ErrRejected = errors.New("rejected")
 )
 
 // RateLimiter is used to bound the rate of some operation. It is a leaky-bucket similar to
