@@ -28,7 +28,7 @@ func (d *expDecay) add(now time.Time, x float64) {
 }
 
 func (d *expDecay) get(now time.Time) float64 {
-	d.ctr *= math.Pow((1 - d.decay), now.Sub(d.last).Seconds())
+	d.ctr *= math.Pow((1 - d.decay), math.Max(0, now.Sub(d.last).Seconds()))
 	d.last = now
 	return d.ctr
 }

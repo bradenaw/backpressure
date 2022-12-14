@@ -145,6 +145,9 @@ func (c *timeBucketedCounter) add(now time.Time, x int) {
 func (c *timeBucketedCounter) get(now time.Time) int {
 	elapsed := now.Sub(c.last)
 	bucketsPassed := int(elapsed / c.width)
+	if bucketsPassed < 0 {
+		bucketsPassed = 0
+	}
 	if bucketsPassed >= len(c.buckets) {
 		bucketsPassed = len(c.buckets)
 	}
