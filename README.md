@@ -4,6 +4,17 @@
 
 This package is intended to help with load management in a distributed system.
 
+It provides:
+
+- [`Semaphore`](https://pkg.go.dev/github.com/bradenaw/backpressure#Semaphore) for bounding
+  concurrency.
+- [`RateLimiter`](https://pkg.go.dev/github.com/bradenaw/backpressure#RateLimiter) for bounding
+  rate.
+- [`AdaptiveThrottle`](https://pkg.go.dev/github.com/bradenaw/backpressure#AdaptiveThrottle) for
+  responding to backpressure signals by slowing clients down.
+
+Read on for motivation and explanation of each.
+
 # Quick Background
 
 Resources are in general finite: the number of cores or amount of memory in a machine, the number of
@@ -97,14 +108,14 @@ extremely spiky at a fine enough time resolution.
 
 Naturally, the proper response is **queueing**: hold onto the requests we do not currently have the
 capacity to serve, because we'll probably be able to serve them very soon. Queues work extremely
-well for the purpose of absorbing _short-term load spikes_.
+well for this purpose: **absorbing short-term load spikes**.
 
 Queues, however, can become extremely painful in slightly more sustained overload. Again imagine a
 properly-provisioned server that is serving very near its capacity. When this server inevitably
-receives a load spike, it results in a very large queue. Even once the load spike goes away, because
-the server is normally serving at very near its capacity, the queue shrinks _very slowly_. If the
-queue is very large, then the requests at the front of the queue have been waiting there for some
-time, and may even time out before they can be served. This creates a _sustaining effect_ for
+receives a large load spike, it results in a very large queue. Even once the load spike goes away,
+because the server is normally serving at very near its capacity, the queue shrinks _very slowly_.
+If the queue is very large, then the requests at the front of the queue have been waiting there for
+some time, and may even time out before they can be served. This creates a _sustaining effect_ for
 overload: now every request arriving at this server needs to wait its turn in a large backlog of
 requests, increasing latency, and many of the requests are unsuccessful because they take so long to
 actually be processed. This situation is called **buffer bloat**, because "buffering" and "queueing"

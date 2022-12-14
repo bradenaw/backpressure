@@ -53,6 +53,8 @@ type rateChange struct {
 	c     chan struct{}
 }
 
+// Additional options for the RateLimiter type. These options do not frequently need to be tuned as
+// the defaults work in a majority of cases, but they're included for completeness.
 type RateLimiterOption struct{ f func(*rateLimiterOptions) }
 
 type rateLimiterOptions struct {
@@ -62,30 +64,41 @@ type rateLimiterOptions struct {
 	debtForgivePerSuccess float64
 }
 
+// The short timeout for the internal CoDels. See the README for more on CoDel.
 func RateLimiterShortTimeout(d time.Duration) RateLimiterOption {
 	return RateLimiterOption{func(opts *rateLimiterOptions) {
 		opts.shortTimeout = d
 	}}
 }
 
+// The long timeout for the internal CoDels. See the README for more on CoDel.
 func RateLimiterLongTimeout(d time.Duration) RateLimiterOption {
 	return RateLimiterOption{func(opts *rateLimiterOptions) {
 		opts.longTimeout = d
 	}}
 }
 
+// The percentage by which debt decays per second, in [0, 1]. Debt decays exponentially over time,
+// since load patterns change and a previously learned debt amount may no longer be relevant.
 func RateLimiterDebtDecayPctPerSec(x float64) RateLimiterOption {
 	return RateLimiterOption{func(opts *rateLimiterOptions) {
 		opts.debtDecayPctPerSec = x
 	}}
 }
 
+// The proportion of debt that is forgiven for lower priorities whenever a higher-priority request
+// succeeds, in [0, 1].
 func RateLimiterDebtForgivePerSuccess(x float64) RateLimiterOption {
 	return RateLimiterOption{func(opts *rateLimiterOptions) {
 		opts.debtForgivePerSuccess = x
 	}}
 }
 
+// NewRateLimiter returns a rate limiter with the given number of priorities, allowing the given
+// aggregate rate, and up to the given burst. That is, the rate limiter is initially empty and its
+// tokens refill at `rate` up to `burst` total tokens.
+//
+// The other options do not frequently need to be modified.
 func NewRateLimiter(
 	priorities int,
 	rate float64,
@@ -126,6 +139,9 @@ func NewRateLimiter(
 	return rl
 }
 
+// Wait blocks until the given number of tokens is available for the given priority. It returns nil
+// if the tokens were successfully acquired or ErrRejected if the internal CoDel times out the
+// request before it can succeed.
 func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) error {
 	w := newCodelWaiter(time.Now(), rlWaiter{
 		p:      p,
@@ -149,6 +165,7 @@ func (rl *RateLimiter) SetRate(rate float64, burst float64) {
 	<-c
 }
 
+// Close frees background resources used by the rate limiter.
 func (rl *RateLimiter) Close() {
 	rl.bg.Wait()
 }

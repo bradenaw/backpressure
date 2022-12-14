@@ -39,6 +39,8 @@ type Semaphore struct {
 	debt        []expDecay
 }
 
+// Additional options for the Semaphore type. These options do not frequently need to be tuned as
+// the defaults work in a majority of cases, but they're included for completeness.
 type SemaphoreOption struct{ f func(*semaphoreOptions) }
 
 type semaphoreOptions struct {
@@ -48,30 +50,40 @@ type semaphoreOptions struct {
 	debtForgivePerSuccess float64
 }
 
+// The short timeout for the internal CoDels. See the README for more on CoDel.
 func SemaphoreShortTimeout(d time.Duration) SemaphoreOption {
 	return SemaphoreOption{func(opts *semaphoreOptions) {
 		opts.shortTimeout = d
 	}}
 }
 
+// The long timeout for the internal CoDels. See the README for more on CoDel.
 func SemaphoreLongTimeout(d time.Duration) SemaphoreOption {
 	return SemaphoreOption{func(opts *semaphoreOptions) {
 		opts.longTimeout = d
 	}}
 }
 
+// The percentage by which debt decays per second, in [0, 1]. Debt decays exponentially over time,
+// since load patterns change and a previously learned debt amount may no longer be relevant.
 func SemaphoreDebtDecayPctPerSec(x float64) SemaphoreOption {
 	return SemaphoreOption{func(opts *semaphoreOptions) {
 		opts.debtDecayPctPerSec = x
 	}}
 }
 
+// The proportion of debt that is forgiven for lower priorities whenever a higher-priority request
+// succeeds, in [0, 1].
 func SemaphoreDebtForgivePerSuccess(x float64) SemaphoreOption {
 	return SemaphoreOption{func(opts *semaphoreOptions) {
 		opts.debtForgivePerSuccess = x
 	}}
 }
 
+// NewSemaphore returns a semaphore with the given number of priorities, and will allow at most
+// capacity concurrency.
+//
+// The other options do not frequently need to be modified.
 func NewSemaphore(
 	priorities int,
 	capacity int,
@@ -200,6 +212,7 @@ func (s *Semaphore) background(ctx context.Context) {
 	}
 }
 
+// Close frees background resources used by the semaphore.
 func (s *Semaphore) Close() {
 	s.bg.Wait()
 }
