@@ -8,6 +8,18 @@ package backpressure
 // `Priority(1)` is higher priority than all priorities except `Priority(1)`, and so on.
 //
 // Types in this package generally have overhead per-priority, and so it's recommended to use a
-// relatively small number of priorities. Around four works well in practice, for example Critical,
-// High, Medium, and Low.
+// relatively small number of priorities. Around four works well in practice, for example:
+//
+// Critical - A user is waiting and critical user flows are functional, if severely degraded, if
+// only Critical requests are served.
+//
+// High - A user is waiting, and this request is important to the overall experience. The default
+// for anything that a user might see.
+//
+// Medium - No user is directly waiting, or the request is noncritical to the experience.
+// Examples: type-ahead search suggestions, asynchronous work.
+//
+// Low - This is a request that is content to consume only leftover capacity, and may wait until
+// off-peak when there is more capacity available. Examples: daily batch jobs, continuous
+// verification, one-offs.
 type Priority int
