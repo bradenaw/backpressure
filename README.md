@@ -145,15 +145,15 @@ Types in this package are all prioritized. In practice, they work best when prio
 relatively coarse and only a small handful of different priorities are used. Four has proven to work
 well, for example:
 
-- **Critical** - A user is waiting and critical user flows are functional, if severely degraded, if
-  only Critical requests are served.
+- **Critical** (`Priority(0)`) - A user is waiting and critical user flows are functional, if
+  severely degraded, if only Critical requests are served.
 
-- **High** - A user is waiting, and this request is important to the overall experience. The default
-  for anything that a user might see.
+- **High** (`Priority(1)`) - A user is waiting, and this request is important to the overall
+  experience. The default for anything that a user might see.
 
-- **Medium** - No user is directly waiting, or the request is noncritical to the experience.
-  Examples: type-ahead search suggestions, asynchronous work.
+- **Medium** (`Priority(2)`) - No user is directly waiting, or the request is noncritical to the
+  experience.  Examples: type-ahead search suggestions, asynchronous work.
 
-- **Low** - This is a request that is content to consume only leftover capacity, and may wait until
-  off-peak when there is more capacity available. Examples: daily batch jobs, continuous
-  verification, one-offs, backfills.
+- **Low** (`Priority(3)`) - This is a request that is content to consume only leftover capacity, and
+  may wait until off-peak when there is more capacity available. Examples: daily batch jobs,
+  continuous verification, one-offs, backfills.
