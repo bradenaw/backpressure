@@ -14,4 +14,8 @@ var (
 	ErrClientRejection = errors.New("rejected without sending: backend is unhealthy")
 
 	errAlreadyClosed = errors.New("already closed")
+
+	errZeroRate = errors.New("RateLimiter with 0 rate rejects everything")
+
+	errZeroCapacity = errors.New("Semaphore with 0 capacity rejects everything")
 )

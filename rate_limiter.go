@@ -6,8 +6,6 @@ import (
 	"math"
 	"sync"
 	"time"
-
-	"github.com/bradenaw/juniper/xsync"
 )
 
 const forever = 365 * 24 * time.Hour
@@ -32,12 +30,12 @@ const forever = 365 * 24 * time.Hour
 // and so some of it is forgiven. Additionally, debt decays over time, since anything the bucket has
 // learned about a load pattern may become out-of-date as load changes.
 type RateLimiter struct {
-	bg                    *xsync.Group
 	longTimeout           time.Duration
 	debtForgivePerSuccess float64
 
 	// All below protected by m.
-	m sync.Mutex
+	m      sync.Mutex
+	bgDone chan struct{}
 	// Set to longTimeout if there are any waiters, or forever otherwise. Nil if the rate limiter
 	// has already been closed.
 	reapTicker *time.Ticker
@@ -145,7 +143,6 @@ func NewRateLimiter(
 	}
 
 	rl := &RateLimiter{
-		bg:                    xsync.NewGroup(context.Background()),
 		longTimeout:           opts.longTimeout,
 		debtForgivePerSuccess: opts.debtForgivePerSuccess,
 
@@ -158,7 +155,6 @@ func NewRateLimiter(
 		queues:     queues,
 		debt:       debt,
 	}
-	rl.bg.Once(rl.background)
 
 	return rl
 }
@@ -173,6 +169,15 @@ func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) err
 		rl.m.Unlock()
 		return errAlreadyClosed
 	}
+	if math.IsInf(rl.rate, 1) {
+		rl.m.Unlock()
+		return nil
+	}
+	if rl.rate == 0 {
+		rl.m.Unlock()
+		return errZeroRate
+	}
+
 	if tokens > rl.burst {
 		rl.m.Unlock()
 		return fmt.Errorf(
@@ -221,13 +226,28 @@ func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) err
 		rl.reapTicker.Reset(rl.longTimeout)
 	}
 	rl.admit(now)
+	if rl.bgDone == nil {
+		rl.bgDone = make(chan struct{})
+		go rl.background()
+	}
+
 	rl.m.Unlock()
 
 	return w.wait(ctx)
 }
 
 func (rl *RateLimiter) SetRate(rate float64, burst float64) {
+	if rate < 0 {
+		panic("negative rate")
+	}
+	if burst < 0 {
+		panic("negative burst")
+	}
 	rl.m.Lock()
+	if rl.reapTicker == nil {
+		rl.m.Unlock()
+		return
+	}
 	now := time.Now()
 	rl.refill(now)
 	rl.rate = rate
@@ -241,7 +261,15 @@ func (rl *RateLimiter) SetRate(rate float64, burst float64) {
 
 // Close frees background resources used by the rate limiter.
 func (rl *RateLimiter) Close() {
-	rl.bg.Wait()
+	rl.m.Lock()
+	rl.nextReady.Stop()
+	rl.reapTicker.Stop()
+	// Signal to further Wait()s.
+	rl.reapTicker = nil
+	if rl.bgDone != nil {
+		close(rl.bgDone)
+	}
+	rl.m.Unlock()
 }
 
 func (rl *RateLimiter) refill(now time.Time) {
@@ -296,23 +324,25 @@ func (rl *RateLimiter) admit(now time.Time) {
 	}
 }
 
-func (rl *RateLimiter) background(ctx context.Context) {
+func (rl *RateLimiter) background() {
 	for {
 		select {
-		case <-ctx.Done():
-			rl.m.Lock()
-			rl.nextReady.Stop()
-			rl.reapTicker.Stop()
-			// Signal to further Wait()s.
-			rl.reapTicker = nil
-			rl.m.Unlock()
+		case <-rl.bgDone:
 			return
 		case <-rl.reapTicker.C:
 			rl.m.Lock()
+			if rl.reapTicker == nil {
+				rl.m.Unlock()
+				return
+			}
 			rl.admit(time.Now())
 			rl.m.Unlock()
 		case <-rl.nextReady.C:
 			rl.m.Lock()
+			if rl.reapTicker == nil {
+				rl.m.Unlock()
+				return
+			}
 			rl.admit(time.Now())
 			rl.m.Unlock()
 		}

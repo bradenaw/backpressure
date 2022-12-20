@@ -6,8 +6,6 @@ import (
 	"math"
 	"sync"
 	"time"
-
-	"github.com/bradenaw/juniper/xsync"
 )
 
 // Semaphore is a way to bound concurrency and similar to golang.org/x/sync/semaphore. Conceptually,
@@ -36,9 +34,9 @@ import (
 type Semaphore struct {
 	longTimeout           time.Duration
 	debtForgivePerSuccess float64
-	bg                    *xsync.Group
 
-	m sync.Mutex
+	m      sync.Mutex
+	bgDone chan struct{}
 	// Set to longTimeout if there are any waiters, or forever otherwise. Nil if the semaphore has
 	// already been closed.
 	reapTicker *time.Ticker
@@ -105,6 +103,10 @@ func NewSemaphore(
 	capacity int,
 	options ...SemaphoreOption,
 ) *Semaphore {
+	if capacity < 0 {
+		panic("negative capacity")
+	}
+
 	opts := semaphoreOptions{
 		shortTimeout:          5 * time.Millisecond,
 		longTimeout:           100 * time.Millisecond,
@@ -119,7 +121,6 @@ func NewSemaphore(
 	s := &Semaphore{
 		longTimeout:           opts.longTimeout,
 		debtForgivePerSuccess: opts.debtForgivePerSuccess,
-		bg:                    xsync.NewGroup(context.Background()),
 
 		reapTicker:  time.NewTicker(forever),
 		capacity:    capacity,
@@ -136,7 +137,6 @@ func NewSemaphore(
 			last:  now,
 		}
 	}
-	s.bg.Once(s.background)
 
 	return s
 }
@@ -153,6 +153,11 @@ func (s *Semaphore) Acquire(ctx context.Context, p Priority, tokens int) error {
 		s.m.Unlock()
 		return errAlreadyClosed
 	}
+	if s.capacity == 0 {
+		s.m.Unlock()
+		return errZeroCapacity
+	}
+
 	if tokens > s.capacity {
 		s.m.Unlock()
 		return fmt.Errorf(
@@ -198,6 +203,10 @@ func (s *Semaphore) Acquire(ctx context.Context, p Priority, tokens int) error {
 		s.reapTicker.Reset(s.longTimeout)
 		s.hasWaiters = true
 	}
+	if s.bgDone == nil {
+		s.bgDone = make(chan struct{})
+		go s.background()
+	}
 	s.admit(now)
 	s.m.Unlock()
 
@@ -221,6 +230,9 @@ func (s *Semaphore) Release(tokens int) {
 // no way of recalling them. If the new capacity is higher than the old, this will immediately admit
 // the waiters it can.
 func (s *Semaphore) SetCapacity(capacity int) {
+	if capacity < 0 {
+		panic("negative capacity")
+	}
 	s.m.Lock()
 	now := time.Now()
 	s.capacity = capacity
@@ -228,18 +240,17 @@ func (s *Semaphore) SetCapacity(capacity int) {
 	s.m.Unlock()
 }
 
-func (s *Semaphore) background(ctx context.Context) {
+func (s *Semaphore) background() {
 	for {
 		select {
-		case <-ctx.Done():
-			s.m.Lock()
-			s.reapTicker.Stop()
-			// Signal to further Acquire()s.
-			s.reapTicker = nil
-			s.m.Unlock()
+		case <-s.bgDone:
 			return
 		case <-s.reapTicker.C:
 			s.m.Lock()
+			if s.reapTicker == nil {
+				s.m.Unlock()
+				return
+			}
 			now := time.Now()
 			s.admit(now)
 			s.m.Unlock()
@@ -249,7 +260,14 @@ func (s *Semaphore) background(ctx context.Context) {
 
 // Close frees background resources used by the semaphore.
 func (s *Semaphore) Close() {
-	s.bg.Wait()
+	s.m.Lock()
+	s.reapTicker.Stop()
+	// Signal to further Acquire()s.
+	s.reapTicker = nil
+	if s.bgDone != nil {
+		close(s.bgDone)
+	}
+	s.m.Unlock()
 }
 
 func (s *Semaphore) canAdmit(now time.Time, p Priority, tokens int) bool {
