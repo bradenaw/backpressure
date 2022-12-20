@@ -3,9 +3,12 @@ package backpressure
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"text/tabwriter"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -16,8 +19,8 @@ func TestSemaphoreStress(t *testing.T) {
 
 	capacity := 20
 	nUsers := []int{5, 10, 10, 1}
-	acquires := make([]uint32, len(nUsers))
-	rejections := make([]uint32, len(nUsers))
+	accepts := make([]uint32, len(nUsers))
+	rejects := make([]uint32, len(nUsers))
 	waits := make([]int64, len(nUsers))
 
 	duration := 10 * time.Second
@@ -43,13 +46,13 @@ func TestSemaphoreStress(t *testing.T) {
 				for time.Since(start) < duration {
 					admitStart := time.Now()
 					err := sem.Acquire(context.Background(), Priority(p), 1)
+					atomic.AddInt64(&waits[p], time.Since(admitStart).Nanoseconds())
 					if err != nil {
-						atomic.AddUint32(&rejections[p], 1)
+						atomic.AddUint32(&rejects[p], 1)
 						time.Sleep(jitter(holdTime))
 						continue
 					}
-					atomic.AddInt64(&waits[p], time.Since(admitStart).Nanoseconds())
-					atomic.AddUint32(&acquires[p], 1)
+					atomic.AddUint32(&accepts[p], 1)
 
 					if int(atomic.AddInt32(&concurrent, 1)) > capacity {
 						return errors.New("too many concurrent holders")
@@ -69,14 +72,23 @@ func TestSemaphoreStress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Logf("acquires: %v", acquires)
-	t.Logf("rejections: %v", rejections)
-	for i := range sem.debt {
-		t.Logf("debt[%d]: %f", i, sem.debt[i].get(time.Now()))
+	var sb strings.Builder
+	tw := tabwriter.NewWriter(&sb, 0, 4, 2, ' ', 0)
+	fmt.Fprint(tw, "priority\tacquires\trejects\tdebt\tavg wait\n")
+	now := time.Now()
+	for p := range accepts {
+		fmt.Fprintf(
+			tw,
+			"%d\t%d\t%d\t%.2f\t%s\n",
+			p,
+			accepts[p],
+			rejects[p],
+			sem.debt[p].get(now),
+			time.Duration(waits[p]/int64(accepts[p]))*time.Nanosecond,
+		)
 	}
-	for i := range waits {
-		t.Logf("avgWait: %s", time.Duration(waits[i]/int64(acquires[i])))
-	}
+	tw.Flush()
+	t.Log("\n" + sb.String())
 }
 
 func jitter(d time.Duration) time.Duration {

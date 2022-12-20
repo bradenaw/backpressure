@@ -2,9 +2,12 @@ package backpressure
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"text/tabwriter"
 	"time"
 )
 
@@ -40,22 +43,26 @@ func TestRateLimiterStress(t *testing.T) {
 
 				waitStart := time.Now()
 				err := rl.Wait(context.Background(), Priority(p), 1)
+				atomic.AddInt64(&waits[p], int64(time.Since(waitStart).Nanoseconds()))
 				if err != nil {
 					atomic.AddUint32(&rejects[p], 1)
 				} else {
 					atomic.AddUint32(&accepts[p], 1)
-					atomic.AddInt64(&waits[p], int64(time.Since(waitStart).Nanoseconds()))
 				}
 			}
 		}()
 	}
 	wg.Wait()
 
+	var sb strings.Builder
+	tw := tabwriter.NewWriter(&sb, 0, 4, 2, ' ', 0)
+	fmt.Fprint(tw, "priority\taccepts\trejects\tdebt\tavg wait\n")
 	now := time.Now()
 	totalAccepts := 0
 	for p := range accepts {
-		t.Logf(
-			"%d:\t%d\t%d\t%.2f\t%s\n",
+		fmt.Fprintf(
+			tw,
+			"%d\t%d\t%d\t%.2f\t%s\n",
 			p,
 			accepts[p],
 			rejects[p],
@@ -64,6 +71,7 @@ func TestRateLimiterStress(t *testing.T) {
 		)
 		totalAccepts += int(accepts[p])
 	}
-
+	tw.Flush()
+	t.Log("\n" + sb.String())
 	t.Logf("%.2f / sec (%.2f desired)", float64(totalAccepts)/d.Seconds(), rate)
 }

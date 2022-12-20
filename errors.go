@@ -12,4 +12,6 @@ var (
 	// ErrClientRejection is returned by an AdaptiveThrottle when the request was not even sent to
 	// the backend because it is overloaded.
 	ErrClientRejection = errors.New("rejected without sending: backend is unhealthy")
+
+	errAlreadyClosed = errors.New("already closed")
 )

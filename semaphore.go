@@ -2,6 +2,7 @@ package backpressure
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -9,8 +10,13 @@ import (
 	"github.com/bradenaw/juniper/xsync"
 )
 
-// Semaphore is a way to bound concurrency and similar to golang.org/x/sync/semaphore, with two
-// major differences:
+// Semaphore is a way to bound concurrency and similar to golang.org/x/sync/semaphore. Conceptually,
+// it is a bucket of some number of tokens. Callers can take tokens out of this bucket using
+// Acquire, do whatever operation needs concurrency bounding, and then return the tokens with
+// Release. If the bucket does not have enough tokens in it to Acquire, it will block for some time
+// in case another user of tokens Releases.
+//
+// It has two major differences from golang.org/x/sync/semaphore:
 //
 // 1. It is prioritized, preferring to accept higher priority requests first.
 //
@@ -28,15 +34,25 @@ import (
 // been necessary and so some of it is forgiven. Additionally, debt decays over time, since anything
 // the semaphore has learned about a load pattern may become out-of-date as load changes.
 type Semaphore struct {
-	shortTimeout          time.Duration
+	longTimeout           time.Duration
 	debtForgivePerSuccess float64
 	bg                    *xsync.Group
 
-	m           sync.Mutex
-	capacity    int
+	m sync.Mutex
+	// Set to longTimeout if there are any waiters, or forever otherwise. Nil if the semaphore has
+	// already been closed.
+	reapTicker *time.Ticker
+	// The capacity of the semaphore in number of tokens.
+	capacity int
+	// Number of tokens currently outstanding: those that we've granted to Acquire()s but have not
+	// yet been Release()d.
 	outstanding int
-	queues      []codel[int]
-	debt        []expDecay
+	// Are there any waiters in queues?
+	hasWaiters bool
+	// Queues by priority.
+	queues []codel[int]
+	// Debts by priority.
+	debt []expDecay
 }
 
 // Additional options for the Semaphore type. These options do not frequently need to be tuned as
@@ -101,13 +117,15 @@ func NewSemaphore(
 	now := time.Now()
 
 	s := &Semaphore{
-		shortTimeout:          opts.shortTimeout,
+		longTimeout:           opts.longTimeout,
 		debtForgivePerSuccess: opts.debtForgivePerSuccess,
 		bg:                    xsync.NewGroup(context.Background()),
 
+		reapTicker:  time.NewTicker(forever),
 		capacity:    capacity,
 		queues:      make([]codel[int], priorities),
 		debt:        make([]expDecay, priorities),
+		hasWaiters:  false,
 		outstanding: 0,
 	}
 
@@ -129,16 +147,32 @@ func NewSemaphore(
 // expires before the tokens can be acquired, or if the request is rejected for timing out with the
 // semaphore's own timeout.
 func (s *Semaphore) Acquire(ctx context.Context, p Priority, tokens int) error {
-	now := time.Now()
 	s.m.Lock()
-	allEmpty := true
+
+	if s.reapTicker == nil {
+		s.m.Unlock()
+		return errAlreadyClosed
+	}
+	if tokens > s.capacity {
+		s.m.Unlock()
+		return fmt.Errorf(
+			"tried to Acquire %d tokens, semaphore only has capacity for %d",
+			tokens,
+			s.capacity,
+		)
+	}
+
+	now := time.Now()
+	hasHigherPriority := false
 	for i := 0; i < int(p); i++ {
 		if !s.queues[i].empty() {
-			allEmpty = false
+			hasHigherPriority = true
 			break
 		}
 	}
-	if allEmpty && float64(s.outstanding)+s.debt[p].get(now) < float64(s.capacity)-float64(tokens) {
+
+	// There's enough capacity to admit right away.
+	if !hasHigherPriority && s.canAdmit(now, p, tokens) {
 		s.outstanding += tokens
 		if s.outstanding > s.capacity {
 			panic("unbalanced Semaphore.Acquire and Semaphore.Release")
@@ -153,31 +187,32 @@ func (s *Semaphore) Acquire(ctx context.Context, p Priority, tokens int) error {
 		return nil
 	}
 
-	w := newCodelWaiter(now, tokens)
-	s.queues[p].push(now, w)
+	// Penalize the lower-priorities for making this request wait.
 	for i := int(p) + 1; i < len(s.debt); i++ {
 		s.debt[i].add(now, math.Min(float64(tokens), float64(s.capacity)-s.debt[i].get(now)))
 	}
+
+	w := newCodelWaiter(now, tokens)
+	s.queues[p].push(now, w)
+	if !s.hasWaiters {
+		s.reapTicker.Reset(s.longTimeout)
+		s.hasWaiters = true
+	}
+	s.admit(now)
 	s.m.Unlock()
 
-	err := w.wait(ctx)
-	if err != nil {
-		return err
-	}
-	return nil
+	return w.wait(ctx)
 }
 
 // Release returns the given number of tokens to the semaphore. It should only be called if these
 // tokens are known to be acquired from the semaphore with a corresponding Acquire.
 func (s *Semaphore) Release(tokens int) {
-	now := time.Now()
-
 	s.m.Lock()
 	s.outstanding -= tokens
 	if s.outstanding < 0 {
 		panic("unbalanced Semaphore.Acquire and Semaphore.Release")
 	}
-	s.admitLocked(now)
+	s.admit(time.Now())
 	s.m.Unlock()
 }
 
@@ -186,27 +221,27 @@ func (s *Semaphore) Release(tokens int) {
 // no way of recalling them. If the new capacity is higher than the old, this will immediately admit
 // the waiters it can.
 func (s *Semaphore) SetCapacity(capacity int) {
-	now := time.Now()
 	s.m.Lock()
+	now := time.Now()
 	s.capacity = capacity
-	s.admitLocked(now)
+	s.admit(now)
 	s.m.Unlock()
 }
 
 func (s *Semaphore) background(ctx context.Context) {
-	ticker := time.NewTicker(s.shortTimeout / 2)
 	for {
 		select {
 		case <-ctx.Done():
-			ticker.Stop()
-			return
-		case <-ticker.C:
-			now := time.Now()
 			s.m.Lock()
-			for i := range s.queues {
-				s.queues[i].reap(now)
-			}
-			s.admitLocked(now)
+			s.reapTicker.Stop()
+			// Signal to further Acquire()s.
+			s.reapTicker = nil
+			s.m.Unlock()
+			return
+		case <-s.reapTicker.C:
+			s.m.Lock()
+			now := time.Now()
+			s.admit(now)
 			s.m.Unlock()
 		}
 	}
@@ -217,7 +252,17 @@ func (s *Semaphore) Close() {
 	s.bg.Wait()
 }
 
-func (s *Semaphore) admitLocked(now time.Time) {
+func (s *Semaphore) canAdmit(now time.Time, p Priority, tokens int) bool {
+	available := float64(s.capacity) - float64(s.outstanding)
+	debt := s.debt[int(p)].get(now)
+	// Rule is that there need to be at least `debt` tokens left over after we admit this.
+	return available > float64(tokens)+debt
+}
+
+func (s *Semaphore) admit(now time.Time) {
+	for p := range s.queues {
+		s.queues[p].reap(now)
+	}
 	for p := range s.queues {
 		queue := &s.queues[p]
 		for {
@@ -225,7 +270,7 @@ func (s *Semaphore) admitLocked(now time.Time) {
 			if !ok {
 				break
 			}
-			if !(float64(s.outstanding)+s.debt[p].get(now) < float64(s.capacity)-float64(nextTokens)) {
+			if !s.canAdmit(now, Priority(p), nextTokens) {
 				break
 			}
 			_, ok = queue.pop(now)
@@ -236,5 +281,11 @@ func (s *Semaphore) admitLocked(now time.Time) {
 		if !queue.empty() {
 			return
 		}
+	}
+
+	// All queues are empty.
+	if s.hasWaiters {
+		s.reapTicker.Reset(forever)
+		s.hasWaiters = false
 	}
 }
