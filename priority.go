@@ -21,5 +21,5 @@ package backpressure
 //
 // Low - This is a request that is content to consume only leftover capacity, and may wait until
 // off-peak when there is more capacity available. Examples: daily batch jobs, continuous
-// verification, one-offs.
+// verification, one-offs, backfills.
 type Priority int

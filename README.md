@@ -67,10 +67,8 @@ relative costs can be easily estimated, when there is difficult-to-measure overh
 costly (e.g. network transit to the resource being protected), or when protecting a throughput
 resource like disk IOPS or replication speed. Each of these can do their job best when placed _as
 close to the resource as possible_, usually in the same process or failing that on the same machine,
-but with some care, success can be had deploying them in proxies. If we're going to reject requests,
-we may as well be discerning about _which_ requests to reject, and so both of these primitives allow
-prioritizing requests to ensure that background jobs and asynchronous work can be sacrificed before
-affecting live, user-facing traffic.
+but with some care, success can be had deploying them in proxies. This is because the resource
+itself will have the highest-signal view of its own load.
 
 Astute readers will have noticed by now that rejection can only delay the inevitable: congestion
 collapse still lurks at some rate of requests, even if rejection can move it further away. This is
@@ -134,3 +132,28 @@ avoid buffer bloat.
 At the heart of any semaphore or rate limiter is indeed a queue, and the types provided in this
 package use CoDel as their queueing policy to avoid accidentally introducing buffer bloat while
 trying to solve load management problems.
+
+# Prioritization
+
+If we're going to reject requests in an overload, we may as well be discerning about which requests
+to reject. Systems usually have quite a bit of low-priority traffic flowing through them, for
+example background jobs, backfills, and verifiers. During an overload, we should sacrifice these
+requests first to ensure that the highest-priority requests, usually those that a user might be
+waiting for, can be served successfully.
+
+Types in this package are all prioritized. In practice, they work best when prioritization is
+relatively coarse and only a small handful of different priorities are used. Four has proven to work
+well, for example:
+
+- **Critical** - A user is waiting and critical user flows are functional, if severely degraded, if
+  only Critical requests are served.
+
+- **High** - A user is waiting, and this request is important to the overall experience. The default
+  for anything that a user might see.
+
+- **Medium** - No user is directly waiting, or the request is noncritical to the experience.
+  Examples: type-ahead search suggestions, asynchronous work.
+
+- **Low** - This is a request that is content to consume only leftover capacity, and may wait until
+  off-peak when there is more capacity available. Examples: daily batch jobs, continuous
+  verification, one-offs, backfills.
