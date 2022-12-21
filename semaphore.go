@@ -290,7 +290,7 @@ func (s *Semaphore) admit(now time.Time) {
 	for p := range s.queues {
 		queue := &s.queues[p]
 		for {
-			nextTokens, ok := queue.next()
+			nextTokens, ok := queue.peek()
 			if !ok {
 				break
 			}

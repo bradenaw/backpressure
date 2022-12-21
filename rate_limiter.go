@@ -303,7 +303,7 @@ func (rl *RateLimiter) admit(now time.Time) {
 	for p := range rl.queues {
 		queue := &rl.queues[p]
 		for {
-			item, ok := queue.next()
+			item, ok := queue.peek()
 			if !ok {
 				// No high-priority waiters, check the next priority down.
 				break
