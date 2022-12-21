@@ -81,6 +81,7 @@ func (c *codel[T]) pop(now time.Time) (T, bool) {
 }
 
 func (c *codel[T]) push(now time.Time, w *codelWaiter[T]) {
+	c.setMode(now)
 	c.items.PushBack(w)
 }
 
