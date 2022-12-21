@@ -10,8 +10,13 @@ import (
 
 const forever = 365 * 24 * time.Hour
 
-// RateLimiter is used to bound the rate of some operation. It is a leaky-bucket similar to
-// golang.org/x/time/rate, with two major differences:
+// RateLimiter is used to bound the rate of some operation. It is a token-bucket similar to
+// golang.org/x/time/rate. Conceptually, it is a bucket of some capacity (the "burst"), which
+// refills at some rate. Callers ask for some number of tokens from the bucket using Wait, they take
+// the tokens from the bucket and Wait returns. If there are not enough tokens, then Wait blocks to
+// wait for enough tokens to be replenished.
+//
+// It has two major differences from golang.org/x/time/rate:
 //
 // 1. It is prioritized, preferring to accept higher priority requests first.
 //
