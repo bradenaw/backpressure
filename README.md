@@ -13,9 +13,11 @@ It provides:
 - [`AdaptiveThrottle`](https://pkg.go.dev/github.com/bradenaw/backpressure#AdaptiveThrottle) for
   responding to backpressure signals by slowing clients down.
 
+Each of these is **prioritized** and generally **auto-tuning**.
+
 Read on for motivation and explanation of each.
 
-# Quick Background
+# Background
 
 Resources are in general finite: the number of cores or amount of memory in a machine, the number of
 IOPS an SSD is capable of, the throughput of shared resources like mutexes. Generally, capacity
