@@ -236,6 +236,12 @@ func (s *Semaphore) SetCapacity(capacity int) {
 	s.m.Lock()
 	now := time.Now()
 	s.capacity = capacity
+	for i := range s.debt {
+		curr := s.debt[i].get(now)
+		if curr > float64(s.capacity) {
+			s.debt[i].add(now, float64(s.capacity)-curr)
+		}
+	}
 	s.admit(now)
 	s.m.Unlock()
 }

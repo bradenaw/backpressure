@@ -260,6 +260,12 @@ func (rl *RateLimiter) SetRate(rate float64, burst float64) {
 	if rl.tokens > burst {
 		rl.tokens = burst
 	}
+	for i := range rl.debt {
+		curr := rl.debt[i].get(now)
+		if curr > rl.burst {
+			rl.debt[i].add(now, rl.burst-curr)
+		}
+	}
 	rl.admit(now)
 	rl.m.Unlock()
 }
