@@ -22,7 +22,7 @@ func TestRateLimiterStress(t *testing.T) {
 		100,
 		RateLimiterShortTimeout(5*time.Millisecond),
 		RateLimiterLongTimeout(100*time.Millisecond),
-		RateLimiterDebtDecayPctPerSec(0.05),
+		RateLimiterDebtDecayInterval(10*time.Second),
 		RateLimiterDebtForgivePerSuccess(0.1),
 	)
 	defer rl.Close()

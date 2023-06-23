@@ -31,7 +31,7 @@ func TestSemaphoreStress(t *testing.T) {
 		capacity,
 		SemaphoreShortTimeout(5*time.Millisecond),
 		SemaphoreLongTimeout(100*time.Millisecond),
-		SemaphoreDebtDecayPctPerSec(0.05),
+		SemaphoreDebtDecayInterval(10*time.Second),
 		SemaphoreDebtForgivePerSuccess(0.10),
 	)
 	defer sem.Close()
@@ -77,6 +77,10 @@ func TestSemaphoreStress(t *testing.T) {
 	fmt.Fprint(tw, "priority\tacquires\trejects\tdebt\tavg wait\n")
 	now := time.Now()
 	for p := range accepts {
+		avgWaitStr := "inf"
+		if accepts[p] > 0 {
+			avgWaitStr = fmt.Sprint(time.Duration(waits[p]/int64(accepts[p])) * time.Nanosecond)
+		}
 		fmt.Fprintf(
 			tw,
 			"%d\t%d\t%d\t%.2f\t%s\n",
@@ -84,7 +88,7 @@ func TestSemaphoreStress(t *testing.T) {
 			accepts[p],
 			rejects[p],
 			sem.debt[p].get(now),
-			time.Duration(waits[p]/int64(accepts[p]))*time.Nanosecond,
+			avgWaitStr,
 		)
 	}
 	tw.Flush()

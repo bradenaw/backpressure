@@ -3,7 +3,6 @@ package backpressure
 import (
 	"context"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 )
@@ -34,6 +33,7 @@ import (
 type Semaphore struct {
 	longTimeout           time.Duration
 	debtForgivePerSuccess float64
+	debtDecayInterval     time.Duration
 
 	m      sync.Mutex
 	bgDone chan struct{}
@@ -50,7 +50,7 @@ type Semaphore struct {
 	// Queues by priority.
 	queues []codel[int]
 	// Debts by priority.
-	debt []expDecay
+	debt []linearDecay
 }
 
 // Additional options for the Semaphore type. These options do not frequently need to be tuned as
@@ -60,7 +60,7 @@ type SemaphoreOption struct{ f func(*semaphoreOptions) }
 type semaphoreOptions struct {
 	shortTimeout          time.Duration
 	longTimeout           time.Duration
-	debtDecayPctPerSec    float64
+	debtDecayInterval     time.Duration
 	debtForgivePerSuccess float64
 }
 
@@ -78,11 +78,11 @@ func SemaphoreLongTimeout(d time.Duration) SemaphoreOption {
 	}}
 }
 
-// The percentage by which debt decays per second, in [0, 1]. Debt decays exponentially over time,
-// since load patterns change and a previously learned debt amount may no longer be relevant.
-func SemaphoreDebtDecayPctPerSec(x float64) SemaphoreOption {
+// The time it takes for 100% debt to be completely forgiven. Debt decays linearly over time since
+// load patterns change and a previously learned debt amount may no longer be relevant.
+func SemaphoreDebtDecayInterval(x time.Duration) SemaphoreOption {
 	return SemaphoreOption{func(opts *semaphoreOptions) {
-		opts.debtDecayPctPerSec = x
+		opts.debtDecayInterval = x
 	}}
 }
 
@@ -110,7 +110,7 @@ func NewSemaphore(
 	opts := semaphoreOptions{
 		shortTimeout:          5 * time.Millisecond,
 		longTimeout:           100 * time.Millisecond,
-		debtDecayPctPerSec:    0.05,
+		debtDecayInterval:     10 * time.Second,
 		debtForgivePerSuccess: 0.1,
 	}
 	for _, option := range options {
@@ -121,20 +121,22 @@ func NewSemaphore(
 	s := &Semaphore{
 		longTimeout:           opts.longTimeout,
 		debtForgivePerSuccess: opts.debtForgivePerSuccess,
+		debtDecayInterval:     opts.debtDecayInterval,
 
 		reapTicker:  time.NewTicker(forever),
 		capacity:    capacity,
 		queues:      make([]codel[int], priorities),
-		debt:        make([]expDecay, priorities),
+		debt:        make([]linearDecay, priorities),
 		hasWaiters:  false,
 		outstanding: 0,
 	}
 
 	for i := range s.queues {
 		s.queues[i] = newCodel[int](opts.shortTimeout, opts.longTimeout)
-		s.debt[i] = expDecay{
-			decay: opts.debtDecayPctPerSec,
-			last:  now,
+		s.debt[i] = linearDecay{
+			decayPerSec: float64(capacity) / opts.debtDecayInterval.Seconds(),
+			last:        now,
+			max:         float64(capacity),
 		}
 	}
 
@@ -183,10 +185,7 @@ func (s *Semaphore) Acquire(ctx context.Context, p Priority, tokens int) error {
 			panic("unbalanced Semaphore.Acquire and Semaphore.Release")
 		}
 		for i := int(p) + 1; i < len(s.debt); i++ {
-			s.debt[i].add(now, math.Max(
-				-(s.debtForgivePerSuccess*float64(tokens)),
-				-s.debt[i].get(now),
-			))
+			s.debt[i].add(now, -(s.debtForgivePerSuccess * float64(tokens)))
 		}
 		s.m.Unlock()
 		return nil
@@ -194,7 +193,7 @@ func (s *Semaphore) Acquire(ctx context.Context, p Priority, tokens int) error {
 
 	// Penalize the lower-priorities for making this request wait.
 	for i := int(p) + 1; i < len(s.debt); i++ {
-		s.debt[i].add(now, math.Min(float64(tokens), float64(s.capacity)-s.debt[i].get(now)))
+		s.debt[i].add(now, float64(tokens))
 	}
 
 	w := newCodelWaiter(now, tokens)
@@ -237,10 +236,8 @@ func (s *Semaphore) SetCapacity(capacity int) {
 	now := time.Now()
 	s.capacity = capacity
 	for i := range s.debt {
-		curr := s.debt[i].get(now)
-		if curr > float64(s.capacity) {
-			s.debt[i].add(now, float64(s.capacity)-curr)
-		}
+		s.debt[i].setDecayPerSec(now, float64(capacity)/s.debtDecayInterval.Seconds())
+		s.debt[i].setMax(now, float64(s.capacity))
 	}
 	s.admit(now)
 	s.m.Unlock()

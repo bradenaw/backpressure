@@ -36,6 +36,7 @@ const forever = 365 * 24 * time.Hour
 // learned about a load pattern may become out-of-date as load changes.
 type RateLimiter struct {
 	longTimeout           time.Duration
+	debtDecayInterval     time.Duration
 	debtForgivePerSuccess float64
 
 	// All below protected by m.
@@ -60,7 +61,7 @@ type RateLimiter struct {
 	// Queues by priority.
 	queues []codel[rlWaiter]
 	// Debt by priority.
-	debt []expDecay
+	debt []linearDecay
 }
 
 type rlWaiter struct {
@@ -81,7 +82,7 @@ type RateLimiterOption struct{ f func(*rateLimiterOptions) }
 type rateLimiterOptions struct {
 	shortTimeout          time.Duration
 	longTimeout           time.Duration
-	debtDecayPctPerSec    float64
+	debtDecayInterval     time.Duration
 	debtForgivePerSuccess float64
 }
 
@@ -99,11 +100,11 @@ func RateLimiterLongTimeout(d time.Duration) RateLimiterOption {
 	}}
 }
 
-// The percentage by which debt decays per second, in [0, 1]. Debt decays exponentially over time,
-// since load patterns change and a previously learned debt amount may no longer be relevant.
-func RateLimiterDebtDecayPctPerSec(x float64) RateLimiterOption {
+// The time it takes for 100% debt to be completely forgiven. Debt decays linearly over time since
+// load patterns change and a previously learned debt amount may no longer be relevant.
+func RateLimiterDebtDecayInterval(d time.Duration) RateLimiterOption {
 	return RateLimiterOption{func(opts *rateLimiterOptions) {
-		opts.debtDecayPctPerSec = x
+		opts.debtDecayInterval = d
 	}}
 }
 
@@ -129,7 +130,7 @@ func NewRateLimiter(
 	opts := rateLimiterOptions{
 		shortTimeout:          5 * time.Millisecond,
 		longTimeout:           100 * time.Millisecond,
-		debtDecayPctPerSec:    0.05,
+		debtDecayInterval:     10 * time.Second,
 		debtForgivePerSuccess: 0.1,
 	}
 	for _, option := range options {
@@ -138,18 +139,20 @@ func NewRateLimiter(
 
 	now := time.Now()
 	queues := make([]codel[rlWaiter], priorities)
-	debt := make([]expDecay, priorities)
+	debt := make([]linearDecay, priorities)
 	for i := range queues {
 		queues[i] = newCodel[rlWaiter](opts.shortTimeout, opts.longTimeout)
-		debt[i] = expDecay{
-			decay: opts.debtDecayPctPerSec,
-			last:  now,
+		debt[i] = linearDecay{
+			max:         burst,
+			decayPerSec: burst / opts.debtDecayInterval.Seconds(),
+			last:        now,
 		}
 	}
 
 	rl := &RateLimiter{
 		longTimeout:           opts.longTimeout,
 		debtForgivePerSuccess: opts.debtForgivePerSuccess,
+		debtDecayInterval:     opts.debtDecayInterval,
 
 		reapTicker: time.NewTicker(forever),
 		nextReady:  time.NewTimer(forever),
@@ -208,7 +211,7 @@ func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) err
 	if !hasHigherPriority && need <= 0 {
 		rl.tokens -= tokens
 		for i := int(p) + 1; i < len(rl.queues); i++ {
-			rl.debt[i].add(now, math.Max(-rl.debt[i].get(now), need*rl.debtForgivePerSuccess))
+			rl.debt[i].add(now, need*rl.debtForgivePerSuccess)
 		}
 		rl.m.Unlock()
 		return nil
@@ -218,7 +221,7 @@ func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) err
 	// queues to try to make sure waiters of this priority don't need to block in the
 	// future.
 	for i := int(p) + 1; i < len(rl.queues); i++ {
-		rl.debt[i].add(now, math.Min(rl.burst-rl.debt[i].get(now), need))
+		rl.debt[i].add(now, need)
 	}
 
 	w := newCodelWaiter(time.Now(), rlWaiter{
@@ -261,10 +264,8 @@ func (rl *RateLimiter) SetRate(rate float64, burst float64) {
 		rl.tokens = burst
 	}
 	for i := range rl.debt {
-		curr := rl.debt[i].get(now)
-		if curr > rl.burst {
-			rl.debt[i].add(now, rl.burst-curr)
-		}
+		rl.debt[i].setDecayPerSec(now, burst/rl.debtDecayInterval.Seconds())
+		rl.debt[i].setMax(now, rl.burst)
 	}
 	rl.admit(now)
 	rl.m.Unlock()
