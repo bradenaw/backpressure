@@ -29,8 +29,11 @@ func (d *linearDecay) setDecayPerSec(now time.Time, decayPerSec float64) {
 }
 
 func (d *linearDecay) setMax(now time.Time, max float64) {
-	d.max = max
 	d.get(now)
+	d.max = max
+	if d.x > d.max {
+		d.x = d.max
+	}
 }
 
 func (d *linearDecay) get(now time.Time) float64 {
