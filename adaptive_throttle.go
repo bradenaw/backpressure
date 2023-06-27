@@ -81,6 +81,11 @@ func WithAdaptiveThrottle[T any](
 	at.m.Lock()
 	requests := float64(at.requests[int(p)].get(now))
 	accepts := float64(at.accepts[int(p)].get(now))
+	for i := 0; i < int(p); i++ {
+		// Also count non-accepted requests for every higher priority as non-accepted for this
+		// priority.
+		requests += float64(at.requests[i].get(now) - at.accepts[i].get(now))
+	}
 	at.m.Unlock()
 
 	rejectionProbability := math.Max(0, (requests-at.k*accepts)/(requests+1))
@@ -98,17 +103,8 @@ func WithAdaptiveThrottle[T any](
 	now = time.Now()
 	at.m.Lock()
 	at.requests[int(p)].add(now, 1)
-	if !errors.Is(err, errAccepted{}) {
+	if err == nil || errors.Is(err, errAccepted{}) {
 		at.accepts[int(p)].add(now, 1)
-		// Also count a rejection as a rejection for every lower priority.
-		//
-		// TODO: Is this a good idea? We have no way of informing the lower priorities that things
-		// are good again, they have to figure it out on their own.
-		if err != nil {
-			for i := int(p) + 1; i < len(at.requests); i++ {
-				at.requests[i].add(now, 1)
-			}
-		}
 	}
 	at.m.Unlock()
 
