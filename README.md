@@ -118,18 +118,15 @@ If the queue is very large, then the requests at the front of the queue have bee
 some time, and may even time out before they can be served. This creates a _sustaining effect_ for
 overload: now every request arriving at this server needs to wait its turn in a large backlog of
 requests, increasing latency, and many of the requests are unsuccessful because they take so long to
-actually be processed. This situation is called **buffer bloat**, because "buffering" and "queueing"
-are often used rather interchangeably, and the queue is bloated with the high, persistent number of
-requests.
+actually be processed. This situation is called **buffer bloat**.
 
 The important thing to note is that _good_ queues, those that are used to absorb short-term load
 spikes, are **frequently empty**. A small spike comes in and fills up the queue, the queue quickly
 gets emptied again by the server catching up. This is where [**Controlled Delay
-(CoDel)**](https://datatracker.ietf.org/doc/html/rfc8289) comes in. (Another concept shamelessly
-taken from our friends in networking.) A CoDel is a queue that is processed in FIFO order for
-fairness during "good" times to allow for fairness and short tail-latency, and switches to LIFO
-order with a very aggressive timeout during overload situations to ensure the queue empties again to
-avoid buffer bloat.
+(CoDel)**](https://datatracker.ietf.org/doc/html/rfc8289) comes in. A CoDel is a queue that is
+processed in FIFO order for fairness during "good" times to allow for fairness and short
+tail-latency, and switches to LIFO order with a very aggressive timeout during overload situations
+to ensure the queue empties again to avoid buffer bloat.
 
 At the heart of any semaphore or rate limiter is indeed a queue, and the types provided in this
 package use CoDel as their queueing policy to avoid accidentally introducing buffer bloat while

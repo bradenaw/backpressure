@@ -115,6 +115,13 @@ func NewAdaptiveThrottle(priorities int, options ...AdaptiveThrottleOption) *Ada
 
 // WithAdaptiveThrottle is used to send a request to a backend using the given AdaptiveThrottle for
 // client-rejections.
+//
+// If f returns an error, at considers this to be a rejection unless it is wrapped with
+// AcceptedError(). If there are enough rejections within a given time window, further calls to
+// WithAdaptiveThrottle may begin returning ErrClientRejection immediately without invoking f. The
+// rate at which this happens depends on the error rate of f.
+//
+// WithAdaptiveThrottle will prefer to reject lower-priority requests if it can.
 func WithAdaptiveThrottle[T any](
 	at *AdaptiveThrottle,
 	p Priority,
@@ -122,6 +129,13 @@ func WithAdaptiveThrottle[T any](
 ) (T, error) {
 	now := time.Now()
 
+	// Lifted rather directly from https://sre.google/sre-book/handling-overload/, with two
+	// extensions:
+	// - We count higher priorities' non-accepts as non-accepts, since we're trying to estimate
+	//   roughly how many requests we can send through without causing rejections for higher
+	//   priorities.
+	// - minPerWindow is configurable, in the book it's always 1 meaning ~1 QPS is the minimum
+	//   allowed.
 	at.m.Lock()
 	requests := float64(at.requests[int(p)].get(now))
 	accepts := float64(at.accepts[int(p)].get(now))

@@ -5,11 +5,16 @@ import (
 	"time"
 )
 
+// linearDecay is a value in [0, max] that decays linearly towards zero over time.
 type linearDecay struct {
-	x           float64
-	last        time.Time
+	// x is the value of linearDecay as of last
+	x float64
+	// last is the last time x was computed
+	last time.Time
+	// decayPerSec is subtracted from x every second
 	decayPerSec float64
-	max         float64
+	// max is the maximum value of x
+	max float64
 }
 
 func (d *linearDecay) add(now time.Time, x float64) {
