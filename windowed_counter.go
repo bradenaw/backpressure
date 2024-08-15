@@ -9,9 +9,10 @@ import (
 type windowedCounter struct {
 	// The width of a single bucket.
 	width time.Duration
+	start time.Time
 
-	// The last time the bucket was read or written.
-	last time.Time
+	// The last time the bucket was read or written, as a duration since `start`.
+	last time.Duration
 	// The sum of all buckets.
 	count int
 	// The count of evens that happened in each bucket. This is a circular buffer.
@@ -23,8 +24,9 @@ type windowedCounter struct {
 
 func newWindowedCounter(now time.Time, width time.Duration, n int) windowedCounter {
 	return windowedCounter{
+		start:   now,
+		last:    0,
 		width:   width,
-		last:    now,
 		buckets: make([]int, n),
 	}
 }
@@ -36,7 +38,8 @@ func (c *windowedCounter) add(now time.Time, x int) {
 }
 
 func (c *windowedCounter) get(now time.Time) int {
-	elapsed := now.Sub(c.last)
+	curr := now.Sub(c.start).Truncate(c.width)
+	elapsed := curr - c.last
 
 	// How many buckets have we passed since `last`?
 	bucketsPassed := int(elapsed / c.width)
@@ -59,7 +62,7 @@ func (c *windowedCounter) get(now time.Time) int {
 	}
 
 	if bucketsPassed > 0 {
-		c.last = now
+		c.last = curr
 	}
 
 	return c.count
