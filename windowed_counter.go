@@ -11,7 +11,7 @@ type windowedCounter struct {
 	width time.Duration
 	start time.Time
 
-	// The last time the bucket was read or written, as a duration since `start`.
+	// The last time head was advanced.
 	last time.Duration
 	// The sum of all buckets.
 	count int
@@ -32,7 +32,7 @@ func newWindowedCounter(now time.Time, width time.Duration, n int) windowedCount
 }
 
 func (c *windowedCounter) add(now time.Time, x int) {
-	c.get(now)
+	c.get(now) // To advance c.head.
 	c.buckets[c.head] += x
 	c.count += x
 }
