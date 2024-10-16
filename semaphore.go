@@ -37,8 +37,8 @@ type Semaphore struct {
 
 	m      sync.Mutex
 	bgDone chan struct{}
-	// Set to longTimeout if there are any waiters, or forever otherwise. Nil if the semaphore has
-	// already been closed.
+	closed bool
+	// Set to longTimeout if there are any waiters, or forever otherwise.
 	reapTicker *time.Ticker
 	// The capacity of the semaphore in number of tokens.
 	capacity int
@@ -151,7 +151,7 @@ func NewSemaphore(
 func (s *Semaphore) Acquire(ctx context.Context, p Priority, tokens int) error {
 	s.m.Lock()
 
-	if s.reapTicker == nil {
+	if s.closed {
 		s.m.Unlock()
 		return errAlreadyClosed
 	}
@@ -264,13 +264,15 @@ func (s *Semaphore) background() {
 // Close frees background resources used by the semaphore.
 func (s *Semaphore) Close() {
 	s.m.Lock()
+	defer s.m.Unlock()
+	if s.closed {
+		return
+	}
+	s.closed = true
 	s.reapTicker.Stop()
-	// Signal to further Acquire()s.
-	s.reapTicker = nil
 	if s.bgDone != nil {
 		close(s.bgDone)
 	}
-	s.m.Unlock()
 }
 
 func (s *Semaphore) canAdmit(now time.Time, p Priority, tokens int) bool {

@@ -42,8 +42,8 @@ type RateLimiter struct {
 	// All below protected by m.
 	m      sync.Mutex
 	bgDone chan struct{}
-	// Set to longTimeout if there are any waiters, or forever otherwise. Nil if the rate limiter
-	// has already been closed.
+	closed bool
+	// Set to longTimeout if there are any waiters, or forever otherwise.
 	reapTicker *time.Ticker
 	// Set to the time when the next waiter can be admitted if there are any, otherwise set to
 	// forever.
@@ -173,7 +173,7 @@ func NewRateLimiter(
 func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) error {
 	rl.m.Lock()
 
-	if rl.reapTicker == nil {
+	if rl.closed {
 		rl.m.Unlock()
 		return errAlreadyClosed
 	}
@@ -274,14 +274,16 @@ func (rl *RateLimiter) SetRate(rate float64, burst float64) {
 // Close frees background resources used by the rate limiter.
 func (rl *RateLimiter) Close() {
 	rl.m.Lock()
+	defer rl.m.Unlock()
+	if rl.closed {
+		return
+	}
+	rl.closed = true
 	rl.nextReady.Stop()
 	rl.reapTicker.Stop()
-	// Signal to further Wait()s.
-	rl.reapTicker = nil
 	if rl.bgDone != nil {
 		close(rl.bgDone)
 	}
-	rl.m.Unlock()
 }
 
 func (rl *RateLimiter) refill(now time.Time) {
