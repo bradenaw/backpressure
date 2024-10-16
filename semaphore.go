@@ -40,6 +40,9 @@ type Semaphore struct {
 	// Set to longTimeout if there are any waiters, or forever otherwise. Nil if the semaphore has
 	// already been closed.
 	reapTicker *time.Ticker
+	// Whether the semaphore has been closed.
+	semClosed bool
+
 	// The capacity of the semaphore in number of tokens.
 	capacity int
 	// Number of tokens currently outstanding: those that we've granted to Acquire()s but have not
@@ -151,7 +154,7 @@ func NewSemaphore(
 func (s *Semaphore) Acquire(ctx context.Context, p Priority, tokens int) error {
 	s.m.Lock()
 
-	if s.reapTicker == nil {
+	if s.semClosed {
 		s.m.Unlock()
 		return errAlreadyClosed
 	}
@@ -250,7 +253,7 @@ func (s *Semaphore) background() {
 			return
 		case <-s.reapTicker.C:
 			s.m.Lock()
-			if s.reapTicker == nil {
+			if s.semClosed {
 				s.m.Unlock()
 				return
 			}
@@ -264,9 +267,13 @@ func (s *Semaphore) background() {
 // Close frees background resources used by the semaphore.
 func (s *Semaphore) Close() {
 	s.m.Lock()
+	if s.semClosed {
+		s.m.Unlock()
+		return
+	}
+
+	s.semClosed = true
 	s.reapTicker.Stop()
-	// Signal to further Acquire()s.
-	s.reapTicker = nil
 	if s.bgDone != nil {
 		close(s.bgDone)
 	}

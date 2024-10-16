@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -93,6 +94,39 @@ func TestSemaphoreStress(t *testing.T) {
 	}
 	tw.Flush()
 	t.Log("\n" + sb.String())
+}
+
+func TestCloseSemaphore(t *testing.T) {
+	priorities := 1
+	capacity := 2
+	sem := NewSemaphore(priorities, capacity)
+	defer sem.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Concurrently acquire and release tokens.
+	var eg errgroup.Group
+	for i := 0; i < 10; i++ {
+		eg.Go(func() error {
+			err := sem.Acquire(ctx, 0 /* p*/, 1 /* tokens */)
+			if err != nil {
+				require.True(t, errors.Is(err, ErrRejected))
+			} else {
+				time.Sleep(jitter(100 * time.Millisecond))
+				sem.Release(1 /* tokens */)
+			}
+			return nil
+		})
+	}
+
+	err := eg.Wait()
+
+	sem.Close()
+
+	// Acquisitions should fail after the semaphore is closed.
+	err = sem.Acquire(ctx, 0 /* p*/, 1 /* tokens */)
+	require.Equal(t, errAlreadyClosed, err)
 }
 
 func jitter(d time.Duration) time.Duration {
