@@ -37,8 +37,7 @@ type Semaphore struct {
 
 	m      sync.Mutex
 	bgDone chan struct{}
-	// Set to longTimeout if there are any waiters, or forever otherwise. Nil if the semaphore has
-	// already been closed.
+	// Set to longTimeout if there are any waiters, or forever otherwise.
 	reapTicker *time.Ticker
 	// Whether the semaphore has been closed.
 	semClosed bool
