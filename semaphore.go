@@ -279,7 +279,7 @@ func (s *Semaphore) canAdmit(now time.Time, p Priority, tokens int) bool {
 	available := float64(s.capacity) - float64(s.outstanding)
 	debt := s.debt[int(p)].get(now)
 	// Rule is that there need to be at least `debt` tokens left over after we admit this.
-	return available > float64(tokens)+debt
+	return available >= float64(tokens)+debt
 }
 
 func (s *Semaphore) admit(now time.Time) {

@@ -14,6 +14,42 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+func TestSemaphoreSimple(t *testing.T) {
+	ctx := context.Background()
+
+	sem := NewSemaphore(
+		2, // priorities
+		3, // capacity
+	)
+
+	// Should be able to take up all of the capacity.
+	err := sem.Acquire(ctx, 0 /*priority*/, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = sem.Acquire(ctx, 0 /*priority*/, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = sem.Acquire(ctx, 0 /*priority*/, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Now full, should reject.
+	err = sem.Acquire(ctx, 0 /*priority*/, 1)
+	if err == nil {
+		t.Fatal(err)
+	}
+
+	sem.Release(1)
+	// No longer full, should accept.
+	err = sem.Acquire(ctx, 0 /*priority*/, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSemaphoreStress(t *testing.T) {
 	concurrent := int32(0)
 
