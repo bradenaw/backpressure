@@ -113,22 +113,11 @@ func NewAdaptiveThrottle(priorities int, options ...AdaptiveThrottleOption) *Ada
 	}
 }
 
-// WithAdaptiveThrottle is used to send a request to a backend using the given AdaptiveThrottle for
-// client-rejections.
-//
-// If f returns an error, at considers this to be a rejection unless it is wrapped with
-// AcceptedError(). If there are enough rejections within a given time window, further calls to
-// WithAdaptiveThrottle may begin returning ErrClientRejection immediately without invoking f. The
-// rate at which this happens depends on the error rate of f.
-//
-// WithAdaptiveThrottle will prefer to reject lower-priority requests if it can.
-func WithAdaptiveThrottle[T any](
-	at *AdaptiveThrottle,
+// Attempt returns true if the request should be attempted, and false if it should be rejected.
+func (at *AdaptiveThrottle) Attempt(
 	p Priority,
-	f func() (T, error),
-) (T, error) {
+) bool {
 	now := time.Now()
-
 	// Lifted rather directly from https://sre.google/sre-book/handling-overload/, with two
 	// extensions:
 	// - We count higher priorities' non-accepts as non-accepts, since we're trying to estimate
@@ -149,22 +138,58 @@ func WithAdaptiveThrottle[T any](
 	rejectionProbability := math.Max(0, (requests-at.k*accepts)/(requests+at.minPerWindow))
 
 	if rand.Float64() < rejectionProbability {
-		var zero T
 		at.m.Lock()
 		at.requests[int(p)].add(now, 1)
 		at.m.Unlock()
+		return false
+	}
+	return true
+}
+
+// Accepted records that a request was accepted by the backend.
+func (at *AdaptiveThrottle) Accepted(p Priority) {
+	now := time.Now()
+	at.m.Lock()
+	at.requests[int(p)].add(now, 1)
+	at.accepts[int(p)].add(now, 1)
+	at.m.Unlock()
+}
+
+// Rejected records that a request was rejected by the backend.
+func (at *AdaptiveThrottle) Rejected(p Priority) {
+	now := time.Now()
+	at.m.Lock()
+	at.requests[int(p)].add(now, 1)
+	at.m.Unlock()
+}
+
+// WithAdaptiveThrottle is used to send a request to a backend using the given AdaptiveThrottle for
+// client-rejections.
+//
+// If f returns an error, at considers this to be a rejection unless it is wrapped with
+// AcceptedError(). If there are enough rejections within a given time window, further calls to
+// WithAdaptiveThrottle may begin returning ErrClientRejection immediately without invoking f. The
+// rate at which this happens depends on the error rate of f.
+//
+// WithAdaptiveThrottle will prefer to reject lower-priority requests if it can.
+func WithAdaptiveThrottle[T any](
+	at *AdaptiveThrottle,
+	p Priority,
+	f func() (T, error),
+) (T, error) {
+	ok := at.Attempt(p)
+	if !ok {
+		var zero T
 		return zero, ErrClientRejection
 	}
 
 	t, err := f()
 
-	now = time.Now()
-	at.m.Lock()
-	at.requests[int(p)].add(now, 1)
 	if err == nil || errors.Is(err, errAccepted{}) {
-		at.accepts[int(p)].add(now, 1)
+		at.Accepted(p)
+	} else {
+		at.Rejected(p)
 	}
-	at.m.Unlock()
 
 	return t, err
 }
