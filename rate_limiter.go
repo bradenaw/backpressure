@@ -349,7 +349,9 @@ func (rl *RateLimiter) background() {
 				rl.m.Unlock()
 				return
 			}
-			rl.admit(time.Now())
+			now := time.Now()
+			rl.refill(now)
+			rl.admit(now)
 			rl.m.Unlock()
 		case <-rl.nextReady.C:
 			rl.m.Lock()
@@ -357,7 +359,9 @@ func (rl *RateLimiter) background() {
 				rl.m.Unlock()
 				return
 			}
-			rl.admit(time.Now())
+			now := time.Now()
+			rl.refill(now)
+			rl.admit(now)
 			rl.m.Unlock()
 		}
 	}
