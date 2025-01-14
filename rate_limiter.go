@@ -212,6 +212,10 @@ func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) err
 		rl.tokens -= tokens
 		for i := int(p) + 1; i < len(rl.queues); i++ {
 			rl.debt[i].add(now, need*rl.debtForgivePerSuccess)
+			// Make sure that we don't accidentally make lower debt for any lower priority. e.g. if
+			// p=0 waits and increases debt for p=1 and p=2, then a p=1 succeeds, p=2 would end with
+			// lower debt than p=1 which makes no sense.
+			rl.debt[i].floor(now, rl.debt[i-1].get(now))
 		}
 		rl.m.Unlock()
 		return nil

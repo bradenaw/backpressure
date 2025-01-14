@@ -41,6 +41,13 @@ func (d *linearDecay) setMax(now time.Time, max float64) {
 	}
 }
 
+func (d *linearDecay) floor(now time.Time, floor float64) {
+	d.get(now)
+	if d.x < floor {
+		d.x = floor
+	}
+}
+
 func (d *linearDecay) get(now time.Time) float64 {
 	d.x = math.Max(0, d.x-math.Max(0, now.Sub(d.last).Seconds())*d.decayPerSec)
 	d.last = now

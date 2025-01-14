@@ -186,6 +186,10 @@ func (s *Semaphore) Acquire(ctx context.Context, p Priority, tokens int) error {
 		}
 		for i := int(p) + 1; i < len(s.debt); i++ {
 			s.debt[i].add(now, -(s.debtForgivePerSuccess * float64(tokens)))
+			// Make sure that we don't accidentally make lower debt for any lower priority. e.g. if
+			// p=0 waits and increases debt for p=1 and p=2, then a p=1 succeeds, p=2 would end with
+			// lower debt than p=1 which makes no sense.
+			s.debt[i].floor(now, s.debt[i-1].get(now))
 		}
 		s.m.Unlock()
 		return nil
