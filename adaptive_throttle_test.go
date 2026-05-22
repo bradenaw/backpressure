@@ -14,6 +14,30 @@ import (
 	"golang.org/x/time/rate"
 )
 
+func TestAcceptedErrorNonNilIsAccepted(t *testing.T) {
+	at := NewAdaptiveThrottle(1)
+	sentinel := errors.New("precondition failed")
+
+	_, err := WithAdaptiveThrottle(at, Priority(0), func() (struct{}, error) {
+		return struct{}{}, AcceptedError(sentinel)
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel error, got %v", err)
+	}
+
+	// All requests so far were accepted; the throttle should not be throttling. If AcceptedError
+	// were misclassified as a rejection, the throttle would start client-rejecting after enough
+	// calls.
+	for i := 0; i < 100; i++ {
+		_, err := WithAdaptiveThrottle(at, Priority(0), func() (struct{}, error) {
+			return struct{}{}, AcceptedError(sentinel)
+		})
+		if errors.Is(err, ErrClientRejection) {
+			t.Fatal("throttle began client-rejecting despite all requests being accepted")
+		}
+	}
+}
+
 func TestAdaptiveThrottleBasic(t *testing.T) {
 	duration := 30 * time.Second
 	start := time.Now()

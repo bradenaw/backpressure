@@ -185,7 +185,8 @@ func WithAdaptiveThrottle[T any](
 
 	t, err := f()
 
-	if err == nil || errors.Is(err, errAccepted{}) {
+	var ae errAccepted
+	if err == nil || errors.As(err, &ae) {
 		at.Accepted(p)
 	} else {
 		at.Rejected(p)
