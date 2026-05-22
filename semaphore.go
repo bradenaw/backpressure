@@ -171,7 +171,7 @@ func (s *Semaphore) Acquire(ctx context.Context, p Priority, tokens int) error {
 
 	now := time.Now()
 	hasHigherPriority := false
-	for i := 0; i < int(p); i++ {
+	for i := 0; i <= int(p); i++ {
 		if !s.queues[i].empty() {
 			hasHigherPriority = true
 			break

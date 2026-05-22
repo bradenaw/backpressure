@@ -199,7 +199,7 @@ func (rl *RateLimiter) Wait(ctx context.Context, p Priority, tokens float64) err
 	rl.refill(now)
 
 	hasHigherPriority := false
-	for i := 0; i < int(p)+1; i++ {
+	for i := 0; i <= int(p); i++ {
 		if !rl.queues[i].empty() {
 			hasHigherPriority = true
 			break
